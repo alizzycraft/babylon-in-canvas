@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.angular/
+.vscode/
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+/docs/runtime-proof-runs
+.codex-dev.log
+.codex-dev.err.log
+.node-version

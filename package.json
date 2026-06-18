@@ -1,0 +1,43 @@
+{
+  "name": "babylon-in-canvas",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/electron/main.js",
+  "packageManager": "pnpm@10.24.0",
+  "description": "Angular + BabylonJS + WebGPU surfaces inside Electron using HTML-in-Canvas.",
+  "engines": {
+    "node": "^22.22.3 || ^24.15.0 || >=26.0.0",
+    "pnpm": ">=10.0.0"
+  },
+  "scripts": {
+    "ng": "ng",
+    "start": "pnpm dev",
+    "dev": "node scripts/assert-port-free.mjs 4200 && pnpm build:electron && concurrently -k -n renderer,electron \"pnpm dev:renderer\" \"wait-on http://127.0.0.1:4200 && electron dist/electron/main.js\"",
+    "dev:renderer": "ng serve --host 127.0.0.1 --port 4200",
+    "build": "pnpm build:renderer && pnpm build:electron",
+    "build:renderer": "ng build",
+    "build:electron": "tsc -p tsconfig.electron.json",
+    "typecheck": "tsc -p tsconfig.app.json --noEmit && tsc -p tsconfig.electron.json --noEmit"
+  },
+  "dependencies": {
+    "@angular/common": "22.0.1",
+    "@angular/compiler": "22.0.1",
+    "@angular/core": "22.0.1",
+    "@angular/platform-browser": "22.0.1",
+    "@babylonjs/core": "9.12.0",
+    "rxjs": "^7.8.2",
+    "tslib": "^2.8.1"
+  },
+  "devDependencies": {
+    "@angular/build": "22.0.1",
+    "@angular/cli": "22.0.1",
+    "@angular/compiler-cli": "22.0.1",
+    "@types/node": "^24.10.1",
+    "concurrently": "^9.2.1",
+    "electron": "42.4.0",
+    "sass": "^1.94.2",
+    "typescript": "6.0.3",
+    "wait-on": "^9.0.3"
+  }
+}
