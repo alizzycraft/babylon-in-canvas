@@ -1,4 +1,5 @@
-import { AfterViewInit, ChangeDetectionStrategy, Component, ElementRef, computed, inject, signal, viewChild } from '@angular/core';
+import { AfterViewInit, ChangeDetectionStrategy, Component, ElementRef, computed, inject, input, signal, viewChild } from '@angular/core';
+import { BicSceneComponent } from '@babylon-in-canvas/angular';
 import { RuntimeProofRunnerService } from './runtime-proof-runner.service';
 import { RuntimeProofResult, RuntimeProofStatus } from './runtime-proof.types';
 import '../bic/core/runtime-environment';
@@ -281,6 +282,7 @@ import '../bic/core/runtime-environment';
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class RuntimeProofPanelComponent implements AfterViewInit {
+  readonly scene = input<BicSceneComponent | null>(null);
   private readonly runner = inject(RuntimeProofRunnerService);
   private readonly babylonProofCanvas = viewChild.required<ElementRef<HTMLCanvasElement>>('babylonProofCanvas');
   private readonly htmlProofCanvas = viewChild.required<ElementRef<HTMLCanvasElement>>('htmlProofCanvas');
@@ -310,6 +312,7 @@ export class RuntimeProofPanelComponent implements AfterViewInit {
         htmlCanvas: this.htmlProofCanvas().nativeElement,
         copySurface: this.copySurface().nativeElement,
         domSurface: this.domSurface().nativeElement,
+        sceneRuntime: this.scene()?.runtime,
       });
 
       this.results.set(results);

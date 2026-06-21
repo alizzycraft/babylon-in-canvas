@@ -21,15 +21,21 @@ export interface HtmlSurfaceTexturePipelineOptions {
   readonly scene: BABYLON.Scene;
   readonly canvas: HTMLCanvasElement;
   readonly source: HTMLElement;
+  readonly deviceRecoveryCount?: number;
 }
 
 export interface HtmlSurfaceTextureSnapshot {
   readonly size: SurfaceTextureSize;
   readonly copySignature: string | null;
   readonly paintObserved: boolean;
+  readonly requestCount: number;
+  readonly coalescedRequestCount: number;
   readonly updateCount: number;
   readonly mutationCount: number;
   readonly resizeCount: number;
+  readonly paintRetryCount: number;
+  readonly paintTimeoutCount: number;
+  readonly deviceRecoveryCount: number;
   readonly updateInFlight: boolean;
   readonly updateQueued: boolean;
   readonly lastError: string | null;
@@ -56,7 +62,13 @@ export interface HtmlSurfaceTexturePipeline {
   dispose(): void;
 }
 
-export type HtmlSurfaceTextureUpdateReason = 'manual' | 'mutation' | 'resize' | 'surface-state';
+export type HtmlSurfaceTextureUpdateReason =
+  | 'manual'
+  | 'mutation'
+  | 'resize'
+  | 'surface-state'
+  | 'device-pixel-ratio'
+  | 'device-restored';
 export type HtmlSurfaceTextureSnapshotListener = () => void;
 
 type PaintableCanvas = HTMLCanvasElement & {
@@ -103,9 +115,14 @@ class DefaultHtmlSurfaceTexturePipeline implements HtmlSurfaceTexturePipeline {
   private updateQueued = false;
   private updatePromise: Promise<void> | null = null;
   private scheduledUpdate = 0;
+  private requestCount = 0;
+  private coalescedRequestCount = 0;
   private updateCount = 0;
   private mutationCount = 0;
   private resizeCount = 0;
+  private paintRetryCount = 0;
+  private paintTimeoutCount = 0;
+  private readonly deviceRecoveryCount: number;
   private copySignature: string | null = null;
   private paintObserved = false;
   private lastError: string | null = null;
@@ -120,6 +137,7 @@ class DefaultHtmlSurfaceTexturePipeline implements HtmlSurfaceTexturePipeline {
     }
 
     this.device = device;
+    this.deviceRecoveryCount = options.deviceRecoveryCount ?? 0;
     this.size = readTextureSize(options.source);
     prepareHtmlInCanvasRoot(options.canvas);
     this.gpuTexture = createSurfaceGpuTexture(device, this.size);
@@ -182,13 +200,16 @@ class DefaultHtmlSurfaceTexturePipeline implements HtmlSurfaceTexturePipeline {
       return Promise.resolve();
     }
 
+    this.requestCount += 1;
+
     if (this.updateInFlight) {
       this.updateQueued = true;
+      this.coalescedRequestCount += 1;
       this.lastUpdateReason = reason;
       return this.updatePromise ?? Promise.resolve();
     }
 
-    const updatePromise = this.runUpdate(reason);
+    const updatePromise = this.drainUpdates(reason);
     this.updatePromise = updatePromise;
     void updatePromise.finally(() => {
       if (this.updatePromise === updatePromise) {
@@ -204,9 +225,14 @@ class DefaultHtmlSurfaceTexturePipeline implements HtmlSurfaceTexturePipeline {
       size: this.size,
       copySignature: this.copySignature,
       paintObserved: this.paintObserved,
+      requestCount: this.requestCount,
+      coalescedRequestCount: this.coalescedRequestCount,
       updateCount: this.updateCount,
       mutationCount: this.mutationCount,
       resizeCount: this.resizeCount,
+      paintRetryCount: this.paintRetryCount,
+      paintTimeoutCount: this.paintTimeoutCount,
+      deviceRecoveryCount: this.deviceRecoveryCount,
       updateInFlight: this.updateInFlight,
       updateQueued: this.updateQueued,
       lastError: this.lastError,
@@ -222,7 +248,7 @@ class DefaultHtmlSurfaceTexturePipeline implements HtmlSurfaceTexturePipeline {
     this.snapshotListeners.clear();
     window.cancelAnimationFrame(this.scheduledUpdate);
     this.babylonTexture.dispose();
-    this.gpuTexture.destroy();
+    safelyDestroyTexture(this.gpuTexture);
   }
 
   private scheduleUpdate(reason: HtmlSurfaceTextureUpdateReason): void {
@@ -236,10 +262,25 @@ class DefaultHtmlSurfaceTexturePipeline implements HtmlSurfaceTexturePipeline {
     });
   }
 
-  private async runUpdate(reason: HtmlSurfaceTextureUpdateReason): Promise<void> {
+  private async drainUpdates(reason: HtmlSurfaceTextureUpdateReason): Promise<void> {
     this.updateInFlight = true;
-    this.lastUpdateReason = reason;
 
+    try {
+      let nextReason = reason;
+
+      do {
+        this.updateQueued = false;
+        this.lastUpdateReason = nextReason;
+        await this.runUpdateCycle();
+        nextReason = this.lastUpdateReason ?? 'manual';
+      } while (this.updateQueued && !this.disposed);
+    } finally {
+      this.updateInFlight = false;
+      this.notifySnapshotListeners();
+    }
+  }
+
+  private async runUpdateCycle(): Promise<void> {
     try {
       await waitForAnimationFrames(2);
       const currentSize = readTextureSize(this.options.source);
@@ -248,7 +289,7 @@ class DefaultHtmlSurfaceTexturePipeline implements HtmlSurfaceTexturePipeline {
         this.recreateTexture(currentSize);
       }
 
-      const result = await copyElementOnNextPaint(
+      const result = await copyElementWithPaintRetry(
         this.options.canvas,
         this.adapter,
         this.options.source,
@@ -259,6 +300,11 @@ class DefaultHtmlSurfaceTexturePipeline implements HtmlSurfaceTexturePipeline {
       this.paintObserved = result.paintObserved;
       this.copySignature = result.copySignature;
       this.lastError = result.error ?? null;
+      this.paintRetryCount += result.retryCount;
+
+      if (result.timedOut) {
+        this.paintTimeoutCount += 1;
+      }
 
       if (result.copySucceeded) {
         this.updateCount += 1;
@@ -267,14 +313,10 @@ class DefaultHtmlSurfaceTexturePipeline implements HtmlSurfaceTexturePipeline {
           this.cornerOrientation = await readCornerOrientation(this.device, this.gpuTexture, this.size);
         }
       }
+    } catch (error) {
+      this.lastError = toErrorMessage(error);
     } finally {
-      this.updateInFlight = false;
       this.notifySnapshotListeners();
-
-      if (this.updateQueued && !this.disposed) {
-        this.updateQueued = false;
-        void this.runUpdate(this.lastUpdateReason ?? 'manual');
-      }
     }
   }
 
@@ -296,11 +338,56 @@ class DefaultHtmlSurfaceTexturePipeline implements HtmlSurfaceTexturePipeline {
     this.gpuTexture = nextGpuTexture;
     this.size = size;
     this.cornerOrientation = null;
-    previousGpuTexture.destroy();
+    safelyDestroyTexture(previousGpuTexture);
   }
 }
 
 interface CopyOnPaintResult {
+  readonly paintObserved: boolean;
+  readonly copySucceeded: boolean;
+  readonly copySignature: string | null;
+  readonly retryCount: number;
+  readonly timedOut: boolean;
+  readonly error?: string;
+}
+
+async function copyElementWithPaintRetry(
+  canvas: HTMLCanvasElement,
+  adapter: ReturnType<typeof createHtmlInCanvasAdapter>,
+  source: HTMLElement,
+  texture: GPUTexture,
+  size: SurfaceTextureSize,
+): Promise<CopyOnPaintResult> {
+  const maximumAttempts = 3;
+  let lastResult: CopyOnPaintAttemptResult | null = null;
+
+  for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
+    lastResult = await copyElementOnNextPaint(canvas, adapter, source, texture, size);
+
+    if (lastResult.copySucceeded || lastResult.paintObserved) {
+      return {
+        ...lastResult,
+        retryCount: attempt,
+        timedOut: false,
+      };
+    }
+
+    await waitForAnimationFrames(1);
+  }
+
+  return {
+    ...(lastResult ?? {
+      paintObserved: false,
+      copySucceeded: false,
+      copySignature: null,
+      error: 'HTML-in-Canvas paint copy did not run.',
+    }),
+    retryCount: maximumAttempts - 1,
+    timedOut: true,
+  };
+}
+
+interface CopyOnPaintAttemptResult {
   readonly paintObserved: boolean;
   readonly copySucceeded: boolean;
   readonly copySignature: string | null;
@@ -375,12 +462,12 @@ function copyElementOnNextPaint(
   source: HTMLElement,
   texture: GPUTexture,
   size: SurfaceTextureSize,
-): Promise<CopyOnPaintResult> {
-  return new Promise<CopyOnPaintResult>((resolve) => {
+): Promise<CopyOnPaintAttemptResult> {
+  return new Promise<CopyOnPaintAttemptResult>((resolve) => {
     let resolved = false;
     let stopPaint: () => void = () => undefined;
 
-    const resolveOnce = (result: CopyOnPaintResult) => {
+    const resolveOnce = (result: CopyOnPaintAttemptResult) => {
       if (resolved) {
         return;
       }
@@ -398,7 +485,7 @@ function copyElementOnNextPaint(
         copySignature: null,
         error: 'Timed out waiting for HTML-in-Canvas paint event before copying to texture.',
       });
-    }, 2_000);
+    }, 750);
 
     stopPaint = adapter.onPaint(() => {
       try {
@@ -420,6 +507,14 @@ function copyElementOnNextPaint(
 
     adapter.requestPaint();
   });
+}
+
+function safelyDestroyTexture(texture: GPUTexture): void {
+  try {
+    texture.destroy();
+  } catch {
+    // A texture from a lost WebGPU device may already be invalid.
+  }
 }
 
 async function waitForAnimationFrames(frameCount: number): Promise<void> {

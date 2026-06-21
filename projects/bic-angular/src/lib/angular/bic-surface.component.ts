@@ -62,7 +62,7 @@ export class BicSurfaceComponent implements AfterViewInit, OnDestroy {
     focused: this.focused(),
     revision: 0,
   }));
-  readonly contentTransform = computed(() => `scale(${window.devicePixelRatio})`);
+  readonly contentTransform = computed(() => `scale(${this.runtime.devicePixelRatio()})`);
 
   private stopRegistration: (() => void) | null = null;
 
@@ -73,12 +73,13 @@ export class BicSurfaceComponent implements AfterViewInit, OnDestroy {
     effect(() => {
       const state = this.state();
       const host = this.elementRef.nativeElement;
-      const devicePixelRatio = window.devicePixelRatio;
+      const devicePixelRatio = this.runtime.devicePixelRatio();
 
       host.style.width = `${Math.ceil(state.size.width * devicePixelRatio)}px`;
       host.style.height = `${Math.ceil(state.size.height * devicePixelRatio)}px`;
       host.dataset['bicSurface'] = state.id;
       host.dataset['bicFocused'] = String(state.focused);
+      host.dataset['bicDevicePixelRatio'] = String(devicePixelRatio);
       host.classList.toggle('bic-surface--focused', state.focused);
       this.runtime.update(state.id, state);
     });

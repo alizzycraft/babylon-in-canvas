@@ -74,3 +74,6 @@ declarations and SCSS exports, and builds the renderer and Electron host.
 
 The implementation status and acceptance evidence are in
 [`docs/mvp-runtime-report.md`](docs/mvp-runtime-report.md).
+
+The runtime-resilience architecture and destructive recovery evidence are in
+[`docs/runtime-resilience-report.md`](docs/runtime-resilience-report.md).

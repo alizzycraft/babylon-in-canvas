@@ -30,6 +30,8 @@ export interface BicRuntimeProofSaveResponse {
 
 export interface BicRuntimeProofsApi {
   saveRun(request: BicRuntimeProofSaveRequest): Promise<BicRuntimeProofSaveResponse>;
+  getZoomFactor(): Promise<number>;
+  setZoomFactor(factor: number): Promise<number>;
 }
 
 declare global {

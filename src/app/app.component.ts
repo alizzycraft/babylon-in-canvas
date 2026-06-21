@@ -20,7 +20,7 @@ import { RuntimeProofPanelComponent } from './discovery/runtime-proof-panel.comp
     RuntimeProofPanelComponent,
   ],
   template: `
-    <bic-scene [diagnostics]="false">
+    <bic-scene #scene [diagnostics]="false">
       <bic-surface
         class="demo-surface"
         [id]="surfaceSnapshot().id"
@@ -54,7 +54,7 @@ import { RuntimeProofPanelComponent } from './discovery/runtime-proof-panel.comp
     </bic-scene>
 
     @if (showRuntimeProofPanel) {
-      <bic-runtime-proof-panel />
+      <bic-runtime-proof-panel [scene]="scene" />
     }
   `,
   styles: `

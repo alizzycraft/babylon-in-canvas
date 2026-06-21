@@ -1,5 +1,6 @@
 import { Injectable } from '@angular/core';
 import * as BABYLON from '@babylonjs/core';
+import { BicSceneRuntime } from '@babylon-in-canvas/angular';
 import {
   auditHtmlInCanvasCapabilities,
   createHtmlInCanvasAdapter,
@@ -22,7 +23,7 @@ const gpuBufferUsage = {
 const gpuMapMode = {
   read: 0x0001,
 } as const;
-const proofTimeoutMs = 10_000;
+const proofTimeoutMs = 20_000;
 const proofProgress = new Map<string, string>();
 
 @Injectable({ providedIn: 'root' })
@@ -70,6 +71,7 @@ export interface RuntimeProofContext {
   readonly htmlCanvas: HTMLCanvasElement;
   readonly copySurface: HTMLElement;
   readonly domSurface: HTMLElement;
+  readonly sceneRuntime?: BicSceneRuntime;
 }
 
 function createRuntimeProofs(context: RuntimeProofContext): readonly RuntimeProof[] {
@@ -84,6 +86,10 @@ function createRuntimeProofs(context: RuntimeProofContext): readonly RuntimeProo
     { name: 'projected-surface-interaction', run: () => runProjectedSurfaceInteractionProof() },
     { name: 'signal-surface-updates', run: () => runSignalSurfaceUpdatesProof() },
     { name: 'surface-lifecycle-pressure', run: () => runSurfaceLifecyclePressureProof() },
+    { name: 'rapid-update-scheduling', run: () => runRapidUpdateSchedulingProof() },
+    { name: 'display-metrics-resize', run: () => runDisplayMetricsResizeProof(context.sceneRuntime) },
+    { name: 'device-pixel-ratio-change', run: () => runDevicePixelRatioChangeProof() },
+    { name: 'webgpu-device-recovery', run: () => runWebGpuDeviceRecoveryProof(context.sceneRuntime) },
     { name: 'mvp-library-contract', run: () => runMvpLibraryContractProof() },
   ];
 }
@@ -530,6 +536,289 @@ async function runSurfaceLifecyclePressureProof(): Promise<RuntimeProofResult> {
   }, errors);
 }
 
+async function runRapidUpdateSchedulingProof(): Promise<RuntimeProofResult> {
+  const errors: string[] = [];
+  const host = await waitForProjectedSurface();
+
+  if (!host) {
+    return result('rapid-update-scheduling', 'blocked', {}, [
+      'The projected Angular surface did not become ready.',
+    ]);
+  }
+
+  const initialRequests = Number(host.dataset['bicTextureRequests'] ?? 0);
+  const initialUpdates = Number(host.dataset['bicTextureUpdates'] ?? 0);
+  const initialCoalesced = Number(host.dataset['bicTextureCoalesced'] ?? 0);
+  const initialTimeouts = Number(host.dataset['bicTextureTimeouts'] ?? 0);
+  const mutationBursts = 32;
+
+  for (let revision = 0; revision < mutationBursts; revision += 1) {
+    host.dataset['rapidRevision'] = String(revision);
+    await Promise.resolve();
+  }
+
+  const drained = await waitForCondition(() =>
+    Number(host.dataset['bicTextureRequests'] ?? 0) > initialRequests &&
+    Number(host.dataset['bicTextureUpdates'] ?? 0) > initialUpdates &&
+    Number(host.dataset['bicTextureCoalesced'] ?? 0) > initialCoalesced &&
+    host.dataset['bicTextureInFlight'] === 'false' &&
+    host.dataset['bicTextureQueued'] === 'false',
+  );
+  const finalTimeouts = Number(host.dataset['bicTextureTimeouts'] ?? 0);
+  const lastError = host.dataset['bicTextureError'] ?? '';
+
+  if (!drained) {
+    errors.push('Rapid mutation requests did not coalesce and drain successfully.');
+  }
+
+  if (finalTimeouts !== initialTimeouts) {
+    errors.push('Rapid mutation scheduling introduced an HTML-in-Canvas paint timeout.');
+  }
+
+  if (lastError !== '') {
+    errors.push(`Rapid mutation scheduling left a texture error: ${lastError}`);
+  }
+
+  return result('rapid-update-scheduling', errors.length === 0 ? 'pass' : 'fail', {
+    mutationBursts,
+    initialRequests,
+    finalRequests: Number(host.dataset['bicTextureRequests'] ?? 0),
+    initialUpdates,
+    finalUpdates: Number(host.dataset['bicTextureUpdates'] ?? 0),
+    initialCoalesced,
+    finalCoalesced: Number(host.dataset['bicTextureCoalesced'] ?? 0),
+    initialTimeouts,
+    finalTimeouts,
+    finalRetries: Number(host.dataset['bicTextureRetries'] ?? 0),
+    drained,
+    lastError,
+  }, errors);
+}
+
+async function runDisplayMetricsResizeProof(
+  runtime: BicSceneRuntime | undefined,
+): Promise<RuntimeProofResult> {
+  if (!runtime) {
+    return result('display-metrics-resize', 'blocked', {}, [
+      'The packaged BicSceneRuntime was not provided to the proof harness.',
+    ]);
+  }
+
+  const errors: string[] = [];
+  const sceneHost = document.querySelector<HTMLElement>('bic-scene');
+
+  if (!sceneHost) {
+    return result('display-metrics-resize', 'blocked', {}, [
+      'The packaged bic-scene host is unavailable.',
+    ]);
+  }
+
+  const originalWidth = sceneHost.style.width;
+  const initial = runtime.displayMetrics();
+  sceneHost.style.width = `${Math.max(initial.cssWidth - 160, 480)}px`;
+  runtime.refreshDisplayMetrics();
+
+  const resized = await waitForCondition(() => {
+    const metrics = runtime.displayMetrics();
+    return metrics.revision > initial.revision && metrics.cssWidth !== initial.cssWidth;
+  });
+  const resizedMetrics = runtime.displayMetrics();
+
+  sceneHost.style.width = originalWidth;
+  runtime.refreshDisplayMetrics();
+  const restored = await waitForCondition(() => {
+    const metrics = runtime.displayMetrics();
+    return metrics.cssWidth === initial.cssWidth && metrics.cssHeight === initial.cssHeight;
+  });
+  const finalMetrics = runtime.displayMetrics();
+  const surfaceRatios = [...document.querySelectorAll<HTMLElement>('[data-bic-surface]')]
+    .map((surface) => Number(surface.dataset['bicDevicePixelRatio'] ?? Number.NaN));
+
+  if (!resized) {
+    errors.push('Canvas ResizeObserver did not publish changed display metrics.');
+  }
+
+  if (!restored) {
+    errors.push('Canvas display metrics did not recover after restoring host dimensions.');
+  }
+
+  if (
+    finalMetrics.devicePixelRatio !== runtime.devicePixelRatio() ||
+    surfaceRatios.some((ratio) => ratio !== finalMetrics.devicePixelRatio)
+  ) {
+    errors.push('Scene and Angular surface device-pixel ratios are not synchronized.');
+  }
+
+  if (
+    finalMetrics.backingWidth <= 0 ||
+    finalMetrics.backingHeight <= 0 ||
+    finalMetrics.cssWidth <= 0 ||
+    finalMetrics.cssHeight <= 0
+  ) {
+    errors.push('Canvas display metrics contain zero-sized dimensions.');
+  }
+
+  return result('display-metrics-resize', errors.length === 0 ? 'pass' : 'fail', {
+    initial,
+    resized: resizedMetrics,
+    final: finalMetrics,
+    runtimeDevicePixelRatio: runtime.devicePixelRatio(),
+    surfaceRatios,
+    resizedObserved: resized,
+    restored,
+  }, errors);
+}
+
+async function runWebGpuDeviceRecoveryProof(
+  runtime: BicSceneRuntime | undefined,
+): Promise<RuntimeProofResult> {
+  if (!runtime) {
+    return result('webgpu-device-recovery', 'blocked', {}, [
+      'The packaged BicSceneRuntime was not provided to the proof harness.',
+    ]);
+  }
+
+  const errors: string[] = [];
+  const initialStatus = runtime.status();
+
+  if (initialStatus.kind !== 'ready') {
+    return result('webgpu-device-recovery', 'blocked', { initialStatus }, [
+      'The packaged scene runtime was not ready before device-loss simulation.',
+    ]);
+  }
+
+  const initialRecoveryCount = initialStatus.deviceRecoveryCount;
+  const initialUpdates = new Map(
+    runtime.snapshots().map((snapshot) => [snapshot.id, snapshot.texture.updateCount]),
+  );
+
+  runtime.simulateDeviceLossForTesting();
+
+  const recovered = await waitForCondition(() => {
+    const status = runtime.status();
+    return status.kind === 'ready' &&
+      status.deviceRecoveryCount > initialRecoveryCount &&
+      runtime.snapshots().every((snapshot) =>
+        snapshot.texture.deviceRecoveryCount > initialRecoveryCount &&
+        snapshot.texture.lastError === null &&
+        snapshot.texture.updateCount > 0
+      ) &&
+      runtime.snapshots().length === initialUpdates.size;
+  }, 15_000);
+  const finalStatus = runtime.status();
+  const finalSnapshots = runtime.snapshots();
+
+  if (!recovered) {
+    errors.push('Babylon restored its device, but packaged scene/surface resources did not fully recover.');
+  }
+
+  if (finalStatus.kind === 'failed') {
+    errors.push(finalStatus.message);
+  }
+
+  return result('webgpu-device-recovery', errors.length === 0 ? 'pass' : 'fail', {
+    initialRecoveryCount,
+    finalStatus,
+    surfaces: finalSnapshots.map((snapshot) => ({
+      id: snapshot.id,
+      initialUpdates: initialUpdates.get(snapshot.id) ?? null,
+      finalUpdates: snapshot.texture.updateCount,
+      deviceRecoveryCount: snapshot.texture.deviceRecoveryCount,
+      lastError: snapshot.texture.lastError,
+    })),
+    recovered,
+  }, errors);
+}
+
+async function runDevicePixelRatioChangeProof(): Promise<RuntimeProofResult> {
+  const proofApi = window.bicRuntimeProofs;
+
+  if (!proofApi?.getZoomFactor || !proofApi.setZoomFactor) {
+    return result('device-pixel-ratio-change', 'blocked', {}, [
+      'Electron zoom-factor proof controls are unavailable.',
+    ]);
+  }
+
+  const errors: string[] = [];
+  const surfaces = [...document.querySelectorAll<HTMLElement>('[data-bic-surface]')];
+
+  if (surfaces.length === 0) {
+    return result('device-pixel-ratio-change', 'blocked', {}, [
+      'No packaged surfaces are available for the DPR transition proof.',
+    ]);
+  }
+
+  const baselineZoomFactor = await proofApi.getZoomFactor();
+  const baselineDevicePixelRatio = window.devicePixelRatio;
+  const targetZoomFactor = Math.abs(baselineZoomFactor - 1) < 0.01 ? 1.2 : 1;
+  const initial = surfaces.map((surface) => ({
+    id: surface.dataset['bicSurface'] ?? null,
+    size: surface.dataset['bicTextureSize'] ?? null,
+    resizes: Number(surface.dataset['bicTextureResizes'] ?? 0),
+  }));
+  let changed = false;
+  let restored = false;
+  let changedDevicePixelRatio = baselineDevicePixelRatio;
+  let changedSurfaces: readonly unknown[] = [];
+
+  try {
+    await proofApi.setZoomFactor(targetZoomFactor);
+    changed = await waitForCondition(() =>
+      Math.abs(window.devicePixelRatio - baselineDevicePixelRatio) > 0.01 &&
+      surfaces.every((surface, index) =>
+        Math.abs(
+          Number(surface.dataset['bicDevicePixelRatio'] ?? 0) -
+          window.devicePixelRatio
+        ) < 0.01 &&
+        Number(surface.dataset['bicTextureResizes'] ?? 0) >
+          (initial[index]?.resizes ?? 0) &&
+        surface.dataset['bicTextureError'] === ''
+      ),
+    );
+    changedDevicePixelRatio = window.devicePixelRatio;
+    changedSurfaces = surfaces.map((surface) => ({
+      id: surface.dataset['bicSurface'] ?? null,
+      devicePixelRatio: Number(surface.dataset['bicDevicePixelRatio'] ?? 0),
+      size: surface.dataset['bicTextureSize'] ?? null,
+      resizes: Number(surface.dataset['bicTextureResizes'] ?? 0),
+      error: surface.dataset['bicTextureError'] ?? '',
+    }));
+  } finally {
+    await proofApi.setZoomFactor(baselineZoomFactor);
+    restored = await waitForCondition(() =>
+      Math.abs(window.devicePixelRatio - baselineDevicePixelRatio) < 0.01 &&
+      surfaces.every((surface, index) =>
+        Math.abs(
+          Number(surface.dataset['bicDevicePixelRatio'] ?? 0) -
+          baselineDevicePixelRatio
+        ) < 0.01 &&
+        surface.dataset['bicTextureSize'] === initial[index]?.size &&
+        surface.dataset['bicTextureError'] === ''
+      ),
+    );
+  }
+
+  if (!changed) {
+    errors.push('Surfaces did not recreate textures for the changed device-pixel ratio.');
+  }
+
+  if (!restored) {
+    errors.push('Surfaces did not restore their original DPR and texture dimensions.');
+  }
+
+  return result('device-pixel-ratio-change', errors.length === 0 ? 'pass' : 'fail', {
+    baselineZoomFactor,
+    targetZoomFactor,
+    baselineDevicePixelRatio,
+    changedDevicePixelRatio,
+    initial,
+    changedSurfaces,
+    finalDevicePixelRatio: window.devicePixelRatio,
+    changed,
+    restored,
+  }, errors);
+}
+
 async function runSignalSurfaceUpdatesProof(): Promise<RuntimeProofResult> {
   const errors: string[] = [];
   const host = await waitForProjectedSurface();
@@ -686,6 +975,23 @@ async function waitForProjectedSurface(): Promise<HTMLElement | null> {
   }
 
   return null;
+}
+
+async function waitForCondition(
+  predicate: () => boolean,
+  timeoutMs = 5_000,
+): Promise<boolean> {
+  const deadline = performance.now() + timeoutMs;
+
+  while (performance.now() < deadline) {
+    if (predicate()) {
+      return true;
+    }
+
+    await waitForAnimationFrames(1);
+  }
+
+  return false;
 }
 
 async function verifyTabOrder(host: HTMLElement): Promise<{

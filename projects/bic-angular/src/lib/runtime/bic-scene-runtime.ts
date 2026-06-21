@@ -19,7 +19,16 @@ export interface BicSceneRuntimeOptions {
 
 export type BicSceneRuntimeStatus =
   | { readonly kind: 'idle' | 'booting' }
-  | { readonly kind: 'ready'; readonly capabilities: HtmlInCanvasCapabilities }
+  | {
+      readonly kind: 'ready';
+      readonly capabilities: HtmlInCanvasCapabilities;
+      readonly deviceRecoveryCount: number;
+    }
+  | {
+      readonly kind: 'recovering';
+      readonly message: string;
+      readonly deviceRecoveryCount: number;
+    }
   | { readonly kind: 'failed'; readonly message: string };
 
 export interface BicSurfaceRuntimeSnapshot {
@@ -27,6 +36,15 @@ export interface BicSurfaceRuntimeSnapshot {
   readonly texture: HtmlSurfaceTextureSnapshot;
   readonly projection: SurfaceProjectionSnapshot | null;
   readonly effects: BicSpatialEffectValues;
+}
+
+export interface BicDisplayMetricsSnapshot {
+  readonly cssWidth: number;
+  readonly cssHeight: number;
+  readonly backingWidth: number;
+  readonly backingHeight: number;
+  readonly devicePixelRatio: number;
+  readonly revision: number;
 }
 
 export interface BicSurfaceRegistration {
@@ -42,6 +60,8 @@ interface SceneResources {
   readonly surfaceCanvas: HTMLCanvasElement;
   readonly adapter: ReturnType<typeof createHtmlInCanvasAdapter>;
   readonly stopResize: () => void;
+  readonly refreshDisplayMetrics: () => void;
+  readonly stopDeviceLoss: () => void;
 }
 
 interface SurfaceResources {
@@ -60,10 +80,25 @@ interface SurfaceResources {
 export class BicSceneRuntime {
   readonly status = signal<BicSceneRuntimeStatus>({ kind: 'idle' });
   readonly snapshots = signal<readonly BicSurfaceRuntimeSnapshot[]>([]);
+  readonly devicePixelRatio = signal(readDevicePixelRatio());
+  readonly displayMetrics = signal<BicDisplayMetricsSnapshot>({
+    cssWidth: 0,
+    cssHeight: 0,
+    backingWidth: 0,
+    backingHeight: 0,
+    devicePixelRatio: readDevicePixelRatio(),
+    revision: 0,
+  });
 
   private readonly pending = new Map<string, BicSurfaceRegistration>();
   private readonly surfaces = new Map<string, SurfaceResources>();
   private resources: SceneResources | null = null;
+  private deviceRecoveryCount = 0;
+  private canvas: HTMLCanvasElement | null = null;
+  private surfaceCanvas: HTMLCanvasElement | null = null;
+  private options: BicSceneRuntimeOptions = {};
+  private recoveringDevice = false;
+  private disposed = false;
 
   async initialize(
     canvas: HTMLCanvasElement,
@@ -74,41 +109,14 @@ export class BicSceneRuntime {
       throw new Error('BicSceneRuntime is already initialized.');
     }
 
+    this.canvas = canvas;
+    this.surfaceCanvas = surfaceCanvas;
+    this.options = options;
+    this.disposed = false;
     this.status.set({ kind: 'booting' });
 
     try {
-      const engine = new BABYLON.WebGPUEngine(canvas, {
-        antialias: true,
-        ...options.engineOptions,
-      });
-      await engine.initAsync();
-
-      const scene = new BABYLON.Scene(engine);
-      scene.clearColor = new BABYLON.Color4(0.015, 0.025, 0.055, 1);
-      const camera = createCamera(scene, canvas);
-      new BABYLON.HemisphericLight('bic-key-light', new BABYLON.Vector3(0, 1, 0), scene);
-
-      const adapter = createHtmlInCanvasAdapter(surfaceCanvas, getWebGpuDevice(engine)?.queue);
-      adapter.assertCapabilities();
-      const stopResize = listenForCanvasResize(engine, canvas, surfaceCanvas);
-
-      this.resources = {
-        engine,
-        scene,
-        camera,
-        canvas,
-        surfaceCanvas,
-        adapter,
-        stopResize,
-      };
-
-      for (const registration of this.pending.values()) {
-        this.createSurface(registration);
-      }
-      this.pending.clear();
-
-      engine.runRenderLoop(() => this.render());
-      this.status.set({ kind: 'ready', capabilities: adapter.capabilities() });
+      await this.bootScene();
     } catch (error) {
       const message = toErrorMessage(error);
       this.status.set({ kind: 'failed', message });
@@ -151,23 +159,32 @@ export class BicSceneRuntime {
     void surface.pipeline.requestUpdate('surface-state');
   }
 
+  refreshDisplayMetrics(): void {
+    this.resources?.refreshDisplayMetrics();
+  }
+
+  simulateDeviceLossForTesting(): void {
+    const resources = this.requireResources();
+    const device = getWebGpuDevice(resources.engine);
+
+    if (!device) {
+      throw new Error('Cannot simulate device loss because the WebGPU device is unavailable.');
+    }
+
+    device.destroy();
+  }
+
   dispose(): void {
-    for (const id of [...this.surfaces.keys()]) {
-      this.unregister(id);
-    }
+    this.disposed = true;
+    this.disposeAllSurfaces();
     this.pending.clear();
-
-    if (!this.resources) {
-      return;
-    }
-
-    this.resources.engine.stopRenderLoop();
-    this.resources.stopResize();
-    this.resources.scene.dispose();
-    this.resources.engine.dispose();
+    this.disposeSceneResources();
     this.resources = null;
+    this.canvas = null;
+    this.surfaceCanvas = null;
     this.status.set({ kind: 'idle' });
     this.snapshots.set([]);
+    this.deviceRecoveryCount = 0;
   }
 
   private createSurface(registration: BicSurfaceRegistration): void {
@@ -189,6 +206,7 @@ export class BicSceneRuntime {
       scene: resources.scene,
       canvas: resources.surfaceCanvas,
       source: host,
+      deviceRecoveryCount: this.deviceRecoveryCount,
     });
     material.emissiveTexture = pipeline.babylonTexture;
 
@@ -209,6 +227,13 @@ export class BicSceneRuntime {
       host.dataset['bicTextureSize'] = `${snapshot.size.width}x${snapshot.size.height}`;
       host.dataset['bicTextureUpdates'] = String(snapshot.updateCount);
       host.dataset['bicTextureResizes'] = String(snapshot.resizeCount);
+      host.dataset['bicTextureRequests'] = String(snapshot.requestCount);
+      host.dataset['bicTextureCoalesced'] = String(snapshot.coalescedRequestCount);
+      host.dataset['bicTextureRetries'] = String(snapshot.paintRetryCount);
+      host.dataset['bicTextureTimeouts'] = String(snapshot.paintTimeoutCount);
+      host.dataset['bicTextureInFlight'] = String(snapshot.updateInFlight);
+      host.dataset['bicTextureQueued'] = String(snapshot.updateQueued);
+      host.dataset['bicDeviceRecoveries'] = String(snapshot.deviceRecoveryCount);
       host.dataset['bicTextureError'] = snapshot.lastError ?? '';
       this.publishSnapshots();
     });
@@ -236,10 +261,7 @@ export class BicSceneRuntime {
     }
 
     surface.stopPipelineListener();
-    surface.effects.dispose();
-    surface.pipeline.dispose();
-    surface.material.dispose();
-    surface.plane.dispose();
+    disposeSurfaceResources(surface);
     this.surfaces.delete(id);
     this.publishSnapshots();
   }
@@ -284,6 +306,143 @@ export class BicSceneRuntime {
     })));
   }
 
+  private handleDisplayMetricsChange(
+    metrics: Omit<BicDisplayMetricsSnapshot, 'revision'>,
+  ): void {
+    const previous = this.displayMetrics();
+    const devicePixelRatioChanged =
+      metrics.devicePixelRatio !== previous.devicePixelRatio;
+
+    this.displayMetrics.set({
+      ...metrics,
+      revision: previous.revision + 1,
+    });
+    this.devicePixelRatio.set(metrics.devicePixelRatio);
+
+    if (devicePixelRatioChanged) {
+      for (const surface of this.surfaces.values()) {
+        void surface.pipeline.requestUpdate('device-pixel-ratio');
+      }
+    }
+  }
+
+  private async handleDeviceLost(): Promise<void> {
+    if (this.recoveringDevice || this.disposed) {
+      return;
+    }
+
+    this.recoveringDevice = true;
+    this.status.set({
+      kind: 'recovering',
+      message: 'The WebGPU device was lost. Rebuilding the Babylon scene and HTML surfaces.',
+      deviceRecoveryCount: this.deviceRecoveryCount,
+    });
+
+    try {
+      for (const surface of this.surfaces.values()) {
+        this.pending.set(surface.state.id, {
+          host: surface.host,
+          state: surface.state,
+        });
+      }
+      this.disposeAllSurfaces();
+      this.disposeSceneResources();
+      this.resources = null;
+      this.deviceRecoveryCount += 1;
+      await this.bootScene();
+    } catch (error) {
+      this.status.set({
+        kind: 'failed',
+        message: `WebGPU device recovery failed: ${toErrorMessage(error)}`,
+      });
+    } finally {
+      this.recoveringDevice = false;
+    }
+  }
+
+  private async bootScene(): Promise<void> {
+    if (!this.canvas || !this.surfaceCanvas) {
+      throw new Error('BicSceneRuntime cannot boot without its scene canvases.');
+    }
+
+    const engine = new BABYLON.WebGPUEngine(this.canvas, {
+      antialias: true,
+      ...this.options.engineOptions,
+      doNotHandleContextLost: true,
+    });
+    await engine.initAsync();
+
+    const device = getWebGpuDevice(engine);
+
+    if (!device) {
+      engine.dispose();
+      throw new Error('Babylon WebGPU device is unavailable after engine initialization.');
+    }
+
+    const scene = new BABYLON.Scene(engine);
+    scene.clearColor = new BABYLON.Color4(0.015, 0.025, 0.055, 1);
+    const camera = createCamera(scene, this.canvas);
+    new BABYLON.HemisphericLight('bic-key-light', new BABYLON.Vector3(0, 1, 0), scene);
+
+    const adapter = createHtmlInCanvasAdapter(this.surfaceCanvas, device.queue);
+    adapter.assertCapabilities();
+    const displayMetrics = listenForCanvasResize(
+      engine,
+      this.canvas,
+      this.surfaceCanvas,
+      (metrics) => this.handleDisplayMetricsChange(metrics),
+    );
+    this.resources = {
+      engine,
+      scene,
+      camera,
+      canvas: this.canvas,
+      surfaceCanvas: this.surfaceCanvas,
+      adapter,
+      stopResize: displayMetrics.stop,
+      refreshDisplayMetrics: displayMetrics.refresh,
+      stopDeviceLoss: listenForDeviceLoss(device, () => {
+        void this.handleDeviceLost();
+      }),
+    };
+
+    const registrations = [...this.pending.values()];
+    this.pending.clear();
+
+    for (const registration of registrations) {
+      this.createSurface(registration);
+    }
+
+    engine.runRenderLoop(() => this.render());
+    this.status.set({
+      kind: 'ready',
+      capabilities: adapter.capabilities(),
+      deviceRecoveryCount: this.deviceRecoveryCount,
+    });
+  }
+
+  private disposeAllSurfaces(): void {
+    for (const surface of this.surfaces.values()) {
+      surface.stopPipelineListener();
+      disposeSurfaceResources(surface);
+    }
+
+    this.surfaces.clear();
+    this.publishSnapshots();
+  }
+
+  private disposeSceneResources(): void {
+    if (!this.resources) {
+      return;
+    }
+
+    this.resources.engine.stopRenderLoop();
+    this.resources.stopResize();
+    this.resources.stopDeviceLoss();
+    this.resources.scene.dispose();
+    this.resources.engine.dispose();
+  }
+
   private requireResources(): SceneResources {
     if (!this.resources) {
       throw new Error('BicSceneRuntime has not been initialized.');
@@ -318,26 +477,90 @@ function applySurfaceState(plane: BABYLON.Mesh, state: SurfaceState): void {
   plane.scaling.set(state.size.width / 240, state.size.height / 240, 1);
 }
 
+function disposeSurfaceResources(surface: SurfaceResources): void {
+  surface.effects.dispose();
+  surface.pipeline.dispose();
+  surface.material.dispose();
+  surface.plane.dispose();
+}
+
+interface DisplayMetricsListener {
+  readonly refresh: () => void;
+  readonly stop: () => void;
+}
+
 function listenForCanvasResize(
   engine: BABYLON.WebGPUEngine,
   canvas: HTMLCanvasElement,
   surfaceCanvas: HTMLCanvasElement,
-): () => void {
+  onMetrics: (metrics: Omit<BicDisplayMetricsSnapshot, 'revision'>) => void,
+): DisplayMetricsListener {
+  let currentDevicePixelRatio = readDevicePixelRatio();
+  let resolutionQuery: MediaQueryList | null = null;
+
   const resize = () => {
     engine.resize();
     surfaceCanvas.width = canvas.width;
     surfaceCanvas.height = canvas.height;
+
+    const nextDevicePixelRatio = readDevicePixelRatio();
+    onMetrics({
+      cssWidth: canvas.clientWidth,
+      cssHeight: canvas.clientHeight,
+      backingWidth: canvas.width,
+      backingHeight: canvas.height,
+      devicePixelRatio: nextDevicePixelRatio,
+    });
+
+    if (nextDevicePixelRatio !== currentDevicePixelRatio) {
+      currentDevicePixelRatio = nextDevicePixelRatio;
+      armResolutionQuery();
+    }
+  };
+  const handleResolutionChange = () => resize();
+  const armResolutionQuery = () => {
+    resolutionQuery?.removeEventListener('change', handleResolutionChange);
+    resolutionQuery = window.matchMedia(`(resolution: ${currentDevicePixelRatio}dppx)`);
+    resolutionQuery.addEventListener('change', handleResolutionChange);
   };
   const observer = new ResizeObserver(resize);
 
   observer.observe(canvas);
   window.addEventListener('resize', resize);
+  window.visualViewport?.addEventListener('resize', resize);
+  armResolutionQuery();
   resize();
 
-  return () => {
-    observer.disconnect();
-    window.removeEventListener('resize', resize);
+  return {
+    refresh: resize,
+    stop: () => {
+      observer.disconnect();
+      resolutionQuery?.removeEventListener('change', handleResolutionChange);
+      window.removeEventListener('resize', resize);
+      window.visualViewport?.removeEventListener('resize', resize);
+    },
   };
+}
+
+function listenForDeviceLoss(
+  device: GPUDevice,
+  onLost: () => void,
+): () => void {
+  let active = true;
+
+  void device.lost.then(() => {
+    if (active) {
+      onLost();
+    }
+  });
+
+  return () => {
+    active = false;
+  };
+}
+
+function readDevicePixelRatio(): number {
+  return Math.max(window.devicePixelRatio || 1, 1);
 }
 
 function getWebGpuDevice(engine: BABYLON.WebGPUEngine): GPUDevice | undefined {

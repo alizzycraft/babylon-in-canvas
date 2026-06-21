@@ -28,6 +28,12 @@ contextBridge.exposeInMainWorld('bicRuntimeProofs', {
   saveRun(request: RuntimeProofSaveRequest): Promise<RuntimeProofSaveResponse> {
     return ipcRenderer.invoke('bic:runtime-proofs:save-run', request) as Promise<RuntimeProofSaveResponse>;
   },
+  getZoomFactor(): Promise<number> {
+    return ipcRenderer.invoke('bic:runtime-proofs:get-zoom-factor') as Promise<number>;
+  },
+  setZoomFactor(factor: number): Promise<number> {
+    return ipcRenderer.invoke('bic:runtime-proofs:set-zoom-factor', factor) as Promise<number>;
+  },
 });
 
 interface RuntimeProofSaveRequest {

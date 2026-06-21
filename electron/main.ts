@@ -43,6 +43,19 @@ ipcMain.handle('bic:runtime-proofs:save-run', async (_event, request: RuntimePro
   };
 });
 
+ipcMain.handle('bic:runtime-proofs:get-zoom-factor', (event): number =>
+  event.sender.getZoomFactor()
+);
+
+ipcMain.handle('bic:runtime-proofs:set-zoom-factor', (event, factor: number): number => {
+  if (!Number.isFinite(factor) || factor < 0.5 || factor > 3) {
+    throw new Error(`Invalid runtime proof zoom factor: ${factor}`);
+  }
+
+  event.sender.setZoomFactor(factor);
+  return event.sender.getZoomFactor();
+});
+
 function createMainWindow(): BrowserWindow {
   const win = new BrowserWindow({
     width: 1280,
