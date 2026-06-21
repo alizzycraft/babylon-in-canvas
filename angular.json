@@ -65,6 +65,32 @@
           "defaultConfiguration": "development"
         }
       }
+    },
+    "bic-angular": {
+      "projectType": "library",
+      "root": "projects/bic-angular",
+      "sourceRoot": "projects/bic-angular/src",
+      "prefix": "bic",
+      "architect": {
+        "build": {
+          "builder": "@angular/build:ng-packagr",
+          "configurations": {
+            "production": {
+              "tsConfig": "projects/bic-angular/tsconfig.lib.prod.json"
+            },
+            "development": {
+              "tsConfig": "projects/bic-angular/tsconfig.lib.json"
+            }
+          },
+          "defaultConfiguration": "production"
+        },
+        "test": {
+          "builder": "@angular/build:unit-test",
+          "options": {
+            "tsConfig": "projects/bic-angular/tsconfig.spec.json"
+          }
+        }
+      }
     }
   }
 }

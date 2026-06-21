@@ -24,8 +24,11 @@
       "DOM.Iterable"
     ],
     "paths": {
-      "@bic/*": [
-        "src/app/bic/*"
+      "@babylon-in-canvas/angular": [
+        "projects/bic-angular/src/public-api.ts"
+      ],
+      "@bic-internal/*": [
+        "projects/bic-angular/src/lib/*"
       ]
     }
   },
@@ -34,5 +37,13 @@
     "strictInjectionParameters": true,
     "strictInputAccessModifiers": true,
     "strictTemplates": true
-  }
+  },
+  "references": [
+    {
+      "path": "./projects/bic-angular/tsconfig.lib.json"
+    },
+    {
+      "path": "./projects/bic-angular/tsconfig.spec.json"
+    }
+  ]
 }

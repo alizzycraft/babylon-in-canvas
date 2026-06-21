@@ -1,6 +1,7 @@
 import * as BABYLON from '@babylonjs/core';
 import { HtmlInCanvasAdapter } from './html-in-canvas-adapter';
 
+// Version-one projection contract: one flat rectangular DOM surface per plane.
 export interface SurfaceProjectionSnapshot {
   readonly transform: string;
   readonly strategy: 'get-element-transform' | 'planar-mvp-fallback';

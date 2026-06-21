@@ -21,8 +21,12 @@ import { ChangeDetectionStrategy, Component, input, output } from '@angular/core
         </label>
 
         <div class="panel__actions">
-          <button type="button" (click)="nudge.emit('left')">Move left</button>
-          <button type="button" (click)="nudge.emit('right')">Move right</button>
+          <button type="button" data-action="move-left" (click)="nudge.emit('left')">Move left</button>
+          <button type="button" data-action="move-right" (click)="nudge.emit('right')">Move right</button>
+          <button type="button" data-action="rotate-left" (click)="rotate.emit('left')">Rotate left</button>
+          <button type="button" data-action="rotate-right" (click)="rotate.emit('right')">Rotate right</button>
+          <button type="button" data-action="grow" (click)="resize.emit('grow')">Grow</button>
+          <button type="button" data-action="shrink" (click)="resize.emit('shrink')">Shrink</button>
         </div>
       </section>
     </article>
@@ -134,4 +138,6 @@ export class DemoPanelComponent {
   readonly focused = input(false);
   readonly focusedChange = output<boolean>();
   readonly nudge = output<'left' | 'right'>();
+  readonly rotate = output<'left' | 'right'>();
+  readonly resize = output<'grow' | 'shrink'>();
 }

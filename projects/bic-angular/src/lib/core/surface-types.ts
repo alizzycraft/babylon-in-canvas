@@ -1,3 +1,4 @@
+// Public value types intentionally avoid leaking Babylon classes into Angular inputs.
 export interface Vec3 {
   readonly x: number;
   readonly y: number;

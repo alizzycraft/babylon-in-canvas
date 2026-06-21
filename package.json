@@ -15,10 +15,12 @@
     "start": "pnpm dev",
     "dev": "node scripts/assert-port-free.mjs 4200 && pnpm build:electron && concurrently -k -n renderer,electron \"pnpm dev:renderer\" \"wait-on http://127.0.0.1:4200 && electron dist/electron/main.js\"",
     "dev:renderer": "ng serve --host 127.0.0.1 --port 4200",
-    "build": "pnpm build:renderer && pnpm build:electron",
+    "build": "pnpm build:library && pnpm build:renderer && pnpm build:electron",
+    "build:library": "ng build bic-angular && node scripts/verify-library-package.mjs",
     "build:renderer": "ng build",
     "build:electron": "tsc -p tsconfig.electron.json",
-    "typecheck": "tsc -p tsconfig.app.json --noEmit && tsc -p tsconfig.electron.json --noEmit"
+    "test:library": "ng test bic-angular --watch=false",
+    "typecheck": "tsc -p projects/bic-angular/tsconfig.lib.json --noEmit && tsc -p tsconfig.app.json --noEmit && tsc -p tsconfig.electron.json --noEmit"
   },
   "dependencies": {
     "@angular/common": "22.0.1",
@@ -36,8 +38,11 @@
     "@types/node": "^24.10.1",
     "concurrently": "^9.2.1",
     "electron": "42.4.0",
+    "jsdom": "^28.0.0",
+    "ng-packagr": "^22.0.0",
     "sass": "^1.94.2",
     "typescript": "6.0.3",
+    "vitest": "^4.0.8",
     "wait-on": "^9.0.3"
   }
 }

@@ -1,0 +1,14 @@
+{
+  "$schema": "../../node_modules/ng-packagr/ng-package.schema.json",
+  "dest": "../../dist/bic-angular",
+  "assets": [
+    {
+      "glob": "**/*",
+      "input": "src/effects",
+      "output": "effects"
+    }
+  ],
+  "lib": {
+    "entryFile": "src/public-api.ts"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "@babylon-in-canvas/angular",
+  "version": "0.0.1",
+  "peerDependencies": {
+    "@angular/common": "^22.0.0",
+    "@angular/core": "^22.0.0",
+    "@babylonjs/core": "^9.12.0"
+  },
+  "dependencies": {
+    "tslib": "^2.3.0"
+  },
+  "sideEffects": false,
+  "exports": {
+    "./effects": {
+      "sass": "./effects/_index.scss",
+      "default": "./effects/_index.scss"
+    }
+  }
+}

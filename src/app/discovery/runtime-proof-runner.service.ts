@@ -1,6 +1,10 @@
 import { Injectable } from '@angular/core';
 import * as BABYLON from '@babylonjs/core';
-import { auditHtmlInCanvasCapabilities, createHtmlInCanvasAdapter, type SurfaceTextureSize } from '../bic/core/html-in-canvas-adapter';
+import {
+  auditHtmlInCanvasCapabilities,
+  createHtmlInCanvasAdapter,
+  type SurfaceTextureSize,
+} from '@bic-internal/core/html-in-canvas-adapter';
 import '../bic/core/runtime-environment';
 import { RuntimeProof, RuntimeProofResult, RuntimeProofStatus } from './runtime-proof.types';
 
@@ -78,7 +82,9 @@ function createRuntimeProofs(context: RuntimeProofContext): readonly RuntimeProo
     { name: 'babylon-texture-orientation', run: () => runBabylonTextureOrientationProof(context.babylonCanvas) },
     { name: 'direct-dom-surface', run: () => runDirectDomSurfaceProof(context.domSurface) },
     { name: 'projected-surface-interaction', run: () => runProjectedSurfaceInteractionProof() },
+    { name: 'signal-surface-updates', run: () => runSignalSurfaceUpdatesProof() },
     { name: 'surface-lifecycle-pressure', run: () => runSurfaceLifecyclePressureProof() },
+    { name: 'mvp-library-contract', run: () => runMvpLibraryContractProof() },
   ];
 }
 
@@ -521,6 +527,119 @@ async function runSurfaceLifecyclePressureProof(): Promise<RuntimeProofResult> {
     pressured,
     resized,
     restored,
+  }, errors);
+}
+
+async function runSignalSurfaceUpdatesProof(): Promise<RuntimeProofResult> {
+  const errors: string[] = [];
+  const host = await waitForProjectedSurface();
+
+  if (!host) {
+    return result('signal-surface-updates', 'blocked', {}, [
+      'The primary projected surface did not become ready.',
+    ]);
+  }
+
+  const initialTransform = host.style.transform;
+  const initialTextureSize = host.dataset['bicTextureSize'] ?? null;
+  const moveButton = host.querySelector<HTMLButtonElement>('[data-action="move-right"]');
+  const rotateButton = host.querySelector<HTMLButtonElement>('[data-action="rotate-right"]');
+  const growButton = host.querySelector<HTMLButtonElement>('[data-action="grow"]');
+  const shrinkButton = host.querySelector<HTMLButtonElement>('[data-action="shrink"]');
+
+  moveButton?.click();
+  await waitForAnimationFrames(3);
+  const movedTransform = host.style.transform;
+
+  rotateButton?.click();
+  await waitForAnimationFrames(3);
+  const rotatedTransform = host.style.transform;
+
+  growButton?.click();
+  const grew = await waitForTextureState(host, (state) =>
+    state.size !== initialTextureSize && state.error === '',
+  );
+  const grownTextureSize = host.dataset['bicTextureSize'] ?? null;
+
+  shrinkButton?.click();
+  const restored = await waitForTextureState(host, (state) =>
+    state.size === initialTextureSize && state.error === '',
+  );
+
+  if (!moveButton || initialTransform === movedTransform) {
+    errors.push('Signal-driven position update did not change the projection.');
+  }
+
+  if (!rotateButton || movedTransform === rotatedTransform) {
+    errors.push('Signal-driven rotation update did not change the projection.');
+  }
+
+  if (!growButton || !shrinkButton || !grew || !restored) {
+    errors.push('Signal-driven size update did not recreate and restore the texture.');
+  }
+
+  return result('signal-surface-updates', errors.length === 0 ? 'pass' : 'fail', {
+    initialTransform,
+    movedTransform,
+    rotatedTransform,
+    initialTextureSize,
+    grownTextureSize,
+    finalTextureSize: host.dataset['bicTextureSize'] ?? null,
+    grew,
+    restored,
+  }, errors);
+}
+
+async function runMvpLibraryContractProof(): Promise<RuntimeProofResult> {
+  const errors: string[] = [];
+  const surfaceCanvas = document.querySelector<HTMLCanvasElement>('canvas[layoutsubtree]');
+  const surfaces = Array.from(
+    surfaceCanvas?.querySelectorAll<HTMLElement>(':scope > bic-surface') ?? [],
+  );
+  await waitForAnimationFrames(3);
+
+  const surfaceDetails = surfaces.map((surface) => ({
+    id: surface.dataset['bicSurface'] ?? null,
+    directCanvasChild: surface.parentElement === surfaceCanvas,
+    projectionReady: surface.dataset['bicProjectionReady'] === 'true',
+    projectionError: Number(surface.dataset['bicProjectionError'] ?? Number.NaN),
+    textureSize: surface.dataset['bicTextureSize'] ?? null,
+    textureError: surface.dataset['bicTextureError'] ?? null,
+    depth: Number(surface.dataset['bicDepth'] ?? Number.NaN),
+    glowRadius: Number(surface.dataset['bicGlowRadius'] ?? Number.NaN),
+    glowIntensity: Number(surface.dataset['bicGlowIntensity'] ?? Number.NaN),
+  }));
+
+  if (surfaces.length < 2) {
+    errors.push(`Expected at least two registered bic-surface elements, found ${surfaces.length}.`);
+  }
+
+  for (const surface of surfaceDetails) {
+    if (!surface.directCanvasChild || !surface.projectionReady) {
+      errors.push(`Surface ${surface.id ?? 'unknown'} is not a ready direct canvas child.`);
+    }
+
+    if (!Number.isFinite(surface.projectionError) || surface.projectionError > 2) {
+      errors.push(`Surface ${surface.id ?? 'unknown'} projection is outside tolerance.`);
+    }
+
+    if (surface.textureError !== '' || !surface.textureSize) {
+      errors.push(`Surface ${surface.id ?? 'unknown'} texture pipeline is not healthy.`);
+    }
+
+    if (
+      !Number.isFinite(surface.depth) ||
+      !Number.isFinite(surface.glowRadius) ||
+      !Number.isFinite(surface.glowIntensity)
+    ) {
+      errors.push(`Surface ${surface.id ?? 'unknown'} did not apply CSS spatial effects.`);
+    }
+  }
+
+  return result('mvp-library-contract', errors.length === 0 ? 'pass' : 'fail', {
+    sceneSelectorPresent: Boolean(document.querySelector('bic-scene')),
+    surfaceCount: surfaces.length,
+    surfaces: surfaceDetails,
   }, errors);
 }
 

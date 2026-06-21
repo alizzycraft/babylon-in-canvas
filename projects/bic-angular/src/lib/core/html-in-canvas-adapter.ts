@@ -1,3 +1,4 @@
+// Isolates the unstable Chromium HTML-in-Canvas API from the public library API.
 export interface HtmlInCanvasCapabilities {
   readonly layoutSubtree: boolean;
   readonly paintEvent: boolean;
@@ -131,7 +132,9 @@ export function createHtmlInCanvasAdapter(canvas: HTMLCanvasElement, queue?: GPU
 export function auditHtmlInCanvasCapabilities(canvas: HTMLCanvasElement, queue?: GPUQueue): readonly HtmlInCanvasCapability[] {
   const experimentalCanvas = canvas as ExperimentalCanvas;
   const experimentalQueue = queue as ExperimentalGpuQueue | undefined;
-  const canvasContextPrototype = CanvasRenderingContext2D.prototype as object;
+  const canvasContextPrototype = typeof CanvasRenderingContext2D === 'undefined'
+    ? undefined
+    : CanvasRenderingContext2D.prototype as object;
   const webGlPrototype = typeof WebGL2RenderingContext === 'undefined'
     ? undefined
     : WebGL2RenderingContext.prototype as object;
@@ -139,7 +142,7 @@ export function auditHtmlInCanvasCapabilities(canvas: HTMLCanvasElement, queue?:
   return [
     describeCapability('layoutsubtree', canvas.hasAttribute('layoutsubtree') ? true : undefined, 'canvas attribute'),
     describeCapability('paint', experimentalCanvas.onpaint, 'canvas paint event handler'),
-    describeCapability('drawElementImage', readPrototypeMember(canvasContextPrototype, 'drawElementImage'), 'CanvasRenderingContext2D.prototype.drawElementImage(source, ...)'),
+    describeCapability('drawElementImage', canvasContextPrototype ? readPrototypeMember(canvasContextPrototype, 'drawElementImage') : undefined, 'CanvasRenderingContext2D.prototype.drawElementImage(source, ...)'),
     describeCapability('texElementImage2D', webGlPrototype ? readPrototypeMember(webGlPrototype, 'texElementImage2D') : undefined, 'WebGL2RenderingContext.prototype.texElementImage2D(...)'),
     describeCapability('copyElementImageToTexture', experimentalQueue?.copyElementImageToTexture, 'GPUQueue.copyElementImageToTexture(source, destination, size)'),
     describeCapability('getElementTransform', experimentalCanvas.getElementTransform, 'canvas.getElementTransform(source, drawTransform)'),
@@ -153,7 +156,9 @@ function detectCapabilities(canvas: HTMLCanvasElement, queue?: GPUQueue): HtmlIn
   return {
     layoutSubtree: canvas.hasAttribute('layoutsubtree'),
     paintEvent: 'onpaint' in experimentalCanvas,
-    drawElementImage: 'drawElementImage' in CanvasRenderingContext2D.prototype,
+    drawElementImage:
+      typeof CanvasRenderingContext2D !== 'undefined' &&
+      'drawElementImage' in CanvasRenderingContext2D.prototype,
     texElementImage2D: typeof WebGL2RenderingContext !== 'undefined' && 'texElementImage2D' in WebGL2RenderingContext.prototype,
     copyElementImageToTexture: Boolean(experimentalQueue && 'copyElementImageToTexture' in experimentalQueue),
     getElementTransform: 'getElementTransform' in experimentalCanvas,

@@ -1,6 +1,7 @@
 import * as BABYLON from '@babylonjs/core';
 import { createHtmlInCanvasAdapter, type SurfaceTextureSize } from './html-in-canvas-adapter';
 
+// Owns the zero-readback DOM-to-WebGPU-to-Babylon texture lifecycle.
 const gpuTextureUsage = {
   copySrc: 0x01,
   copyDst: 0x02,
@@ -146,7 +147,10 @@ class DefaultHtmlSurfaceTexturePipeline implements HtmlSurfaceTexturePipeline {
       if (records.every((record) =>
         record.type === 'attributes' &&
         record.target === options.source &&
-        record.attributeName === 'style'
+        (
+          record.attributeName === 'style' ||
+          record.attributeName?.startsWith('data-bic-') === true
+        )
       )) {
         return;
       }
@@ -342,7 +346,9 @@ function readTextureSize(source: HTMLElement): SurfaceTextureSize {
 
   return {
     width: Math.max(1, source.offsetWidth),
-    height: Math.max(1, source.offsetHeight),
+    // Electron 42's legacy two-argument copy path rasterizes the bottom edge
+    // inclusively for custom-element capture roots.
+    height: Math.max(1, source.offsetHeight + 1),
     devicePixelRatio,
   };
 }
@@ -371,9 +377,8 @@ function copyElementOnNextPaint(
   size: SurfaceTextureSize,
 ): Promise<CopyOnPaintResult> {
   return new Promise<CopyOnPaintResult>((resolve) => {
-    const paintableCanvas = canvas as PaintableCanvas;
-    const previousOnPaint = paintableCanvas.onpaint;
     let resolved = false;
+    let stopPaint: () => void = () => undefined;
 
     const resolveOnce = (result: CopyOnPaintResult) => {
       if (resolved) {
@@ -381,7 +386,7 @@ function copyElementOnNextPaint(
       }
 
       resolved = true;
-      paintableCanvas.onpaint = previousOnPaint ?? null;
+      stopPaint();
       window.clearTimeout(timeout);
       resolve(result);
     };
@@ -395,9 +400,7 @@ function copyElementOnNextPaint(
       });
     }, 2_000);
 
-    paintableCanvas.onpaint = (event: Event) => {
-      previousOnPaint?.call(canvas, event);
-
+    stopPaint = adapter.onPaint(() => {
       try {
         const copySignature = adapter.copyElementToTexture(source, texture, size);
         resolveOnce({
@@ -413,7 +416,7 @@ function copyElementOnNextPaint(
           error: toErrorMessage(error),
         });
       }
-    };
+    });
 
     adapter.requestPaint();
   });

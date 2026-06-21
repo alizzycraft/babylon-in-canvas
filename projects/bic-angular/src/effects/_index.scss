@@ -1,0 +1,8 @@
+@mixin depth($amount) {
+  --bic-depth: #{$amount};
+}
+
+@mixin glow($radius: 18px, $intensity: 0.6) {
+  --bic-glow-radius: #{$radius};
+  --bic-glow-intensity: #{$intensity};
+}
