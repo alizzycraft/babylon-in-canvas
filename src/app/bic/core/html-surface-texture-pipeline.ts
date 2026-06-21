@@ -92,8 +92,8 @@ class DefaultHtmlSurfaceTexturePipeline implements HtmlSurfaceTexturePipeline {
 
   private readonly adapter;
   private readonly device: GPUDevice;
-  private readonly gpuTexture: GPUTexture;
-  private readonly size: SurfaceTextureSize;
+  private gpuTexture: GPUTexture;
+  private size: SurfaceTextureSize;
   private readonly mutationObserver: MutationObserver;
   private readonly resizeObserver: ResizeObserver;
   private readonly snapshotListeners = new Set<HtmlSurfaceTextureSnapshotListener>();
@@ -120,7 +120,7 @@ class DefaultHtmlSurfaceTexturePipeline implements HtmlSurfaceTexturePipeline {
 
     this.device = device;
     this.size = readTextureSize(options.source);
-    prepareHtmlInCanvasRoot(options.canvas, options.source, this.size);
+    prepareHtmlInCanvasRoot(options.canvas);
     this.gpuTexture = createSurfaceGpuTexture(device, this.size);
     this.adapter = createHtmlInCanvasAdapter(options.canvas, device.queue);
 
@@ -142,7 +142,15 @@ class DefaultHtmlSurfaceTexturePipeline implements HtmlSurfaceTexturePipeline {
     this.babylonTexture.vScale = -1;
     this.babylonTexture.vOffset = 1;
 
-    this.mutationObserver = new MutationObserver(() => {
+    this.mutationObserver = new MutationObserver((records) => {
+      if (records.every((record) =>
+        record.type === 'attributes' &&
+        record.target === options.source &&
+        record.attributeName === 'style'
+      )) {
+        return;
+      }
+
       this.mutationCount += 1;
       this.scheduleUpdate('mutation');
     });
@@ -233,8 +241,7 @@ class DefaultHtmlSurfaceTexturePipeline implements HtmlSurfaceTexturePipeline {
       const currentSize = readTextureSize(this.options.source);
 
       if (!sameTextureSize(this.size, currentSize)) {
-        this.lastError = `Surface texture resize is not implemented yet. Initial ${this.size.width}x${this.size.height}, current ${currentSize.width}x${currentSize.height}.`;
-        return;
+        this.recreateTexture(currentSize);
       }
 
       const result = await copyElementOnNextPaint(
@@ -271,6 +278,21 @@ class DefaultHtmlSurfaceTexturePipeline implements HtmlSurfaceTexturePipeline {
     for (const listener of this.snapshotListeners) {
       listener();
     }
+  }
+
+  private recreateTexture(size: SurfaceTextureSize): void {
+    const previousGpuTexture = this.gpuTexture;
+    const nextGpuTexture = createSurfaceGpuTexture(this.device, size);
+    const nextInternalTexture = (this.options.engine as WebGpuTextureWrappingEngine)
+      .wrapWebGPUTexture(nextGpuTexture);
+
+    initializeWrappedTextureView(nextInternalTexture, size);
+    this.babylonTexture.releaseInternalTexture();
+    this.babylonTexture._texture = nextInternalTexture;
+    this.gpuTexture = nextGpuTexture;
+    this.size = size;
+    this.cornerOrientation = null;
+    previousGpuTexture.destroy();
   }
 }
 
@@ -319,8 +341,8 @@ function readTextureSize(source: HTMLElement): SurfaceTextureSize {
   const devicePixelRatio = window.devicePixelRatio;
 
   return {
-    width: Math.max(1, Math.ceil(source.offsetWidth * devicePixelRatio)),
-    height: Math.max(1, Math.ceil(source.offsetHeight * devicePixelRatio)),
+    width: Math.max(1, source.offsetWidth),
+    height: Math.max(1, source.offsetHeight),
     devicePixelRatio,
   };
 }
@@ -331,21 +353,14 @@ function sameTextureSize(a: SurfaceTextureSize, b: SurfaceTextureSize): boolean 
 
 function prepareHtmlInCanvasRoot(
   canvas: HTMLCanvasElement,
-  source: HTMLElement,
-  size: SurfaceTextureSize,
 ): void {
-  canvas.width = size.width;
-  canvas.height = size.height;
-  canvas.style.width = `${source.offsetWidth}px`;
-  canvas.style.height = `${source.offsetHeight}px`;
-
   const context = canvas.getContext('2d');
 
   if (!context) {
     throw new Error('HTML-in-Canvas root could not create a 2D rendering context.');
   }
 
-  context.clearRect(0, 0, size.width, size.height);
+  context.clearRect(0, 0, canvas.width, canvas.height);
 }
 
 function copyElementOnNextPaint(
@@ -378,7 +393,7 @@ function copyElementOnNextPaint(
         copySignature: null,
         error: 'Timed out waiting for HTML-in-Canvas paint event before copying to texture.',
       });
-    }, 750);
+    }, 2_000);
 
     paintableCanvas.onpaint = (event: Event) => {
       previousOnPaint?.call(canvas, event);

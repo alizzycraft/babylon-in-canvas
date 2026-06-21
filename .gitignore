@@ -9,4 +9,8 @@ yarn-error.log*
 /docs/runtime-proof-runs
 .codex-dev.log
 .codex-dev.err.log
+.codex-electron.log
+.codex-electron.err.log
+.codex-renderer.log
+.codex-renderer.err.log
 .node-version

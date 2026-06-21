@@ -19,6 +19,10 @@ import {
 } from '../core/html-surface-texture-pipeline';
 import { SurfaceState } from '../core/surface-types';
 import { toSurfaceViewModel } from '../core/surface-machine';
+import {
+  SurfaceProjectionSnapshot,
+  synchronizeSurfaceProjection,
+} from '../core/surface-projection';
 
 interface SceneResources {
   readonly engine: BABYLON.WebGPUEngine;
@@ -29,6 +33,7 @@ interface SceneResources {
   readonly surfaceTexturePipeline: HtmlSurfaceTexturePipeline;
   readonly stopSurfaceTextureSnapshotListener: () => void;
   readonly stopResizeListener: () => void;
+  readonly adapter: ReturnType<typeof createHtmlInCanvasAdapter>;
 }
 
 interface SceneRenderSnapshot {
@@ -42,6 +47,7 @@ interface SceneRenderSnapshot {
   readonly renderHeight: number;
   readonly activeMeshes: number;
   readonly frameId: number;
+  readonly projection: SurfaceProjectionSnapshot;
   readonly camera: {
     readonly position: string;
     readonly target: string;
@@ -77,13 +83,20 @@ type SceneStatus =
           #surfaceHost
           class="surface-host"
           [class.surface-host--focused]="viewModel().focused"
-          [style.width]="viewModel().cssWidth"
-          [style.height]="viewModel().cssHeight"
+          [style.width]="captureSize().width"
+          [style.height]="captureSize().height"
           [style.--bic-depth]="viewModel().depth"
           [style.--bic-glow-intensity]="viewModel().glowIntensity"
           [attr.data-bic-surface]="viewModel().id"
         >
-          <ng-content />
+          <div
+            class="surface-content"
+            [style.width]="viewModel().cssWidth"
+            [style.height]="viewModel().cssHeight"
+            [style.transform]="captureSize().contentTransform"
+          >
+            <ng-content />
+          </div>
         </div>
       </canvas>
 
@@ -135,10 +148,10 @@ type SceneStatus =
 
     .surface-canvas {
       position: absolute;
-      left: 12px;
-      top: 12px;
+      inset: 0;
       z-index: 2;
-      opacity: 0.001;
+      width: 100%;
+      height: 100%;
       pointer-events: none;
     }
 
@@ -154,6 +167,13 @@ type SceneStatus =
         0 0 calc(var(--bic-glow-intensity) * 42px) rgba(97, 146, 255, var(--bic-glow-intensity));
       color: #f4f7fb;
       contain: layout paint style;
+      pointer-events: auto;
+      transform-origin: 0 0;
+      will-change: transform;
+    }
+
+    .surface-content {
+      transform-origin: 0 0;
     }
 
     .surface-host--focused {
@@ -219,6 +239,16 @@ export class BicSceneComponent implements AfterViewInit, OnDestroy {
   readonly diagnosticsCollapsed = signal(true);
 
   readonly viewModel = computed(() => toSurfaceViewModel(this.surface()));
+  readonly captureSize = computed(() => {
+    const size = this.surface().size;
+    const devicePixelRatio = window.devicePixelRatio;
+
+    return {
+      width: `${Math.ceil(size.width * devicePixelRatio)}px`,
+      height: `${Math.ceil(size.height * devicePixelRatio)}px`,
+      contentTransform: `scale(${devicePixelRatio})`,
+    };
+  });
 
   readonly statusLabel = computed(() => {
     const status = this.status();
@@ -252,7 +282,6 @@ export class BicSceneComponent implements AfterViewInit, OnDestroy {
 
       applySurfaceToPlane(resources.plane, surface);
       resources.camera.setTarget(resources.plane.position);
-      syncSurfaceHost(this.surfaceHostRef().nativeElement, surface);
       void resources.surfaceTexturePipeline.requestUpdate('surface-state');
     });
   }
@@ -272,12 +301,10 @@ export class BicSceneComponent implements AfterViewInit, OnDestroy {
       const { scene, camera } = createScene(engine, canvas);
       const plane = createSurfacePlane(scene, this.surface());
       const material = createSurfaceMaterial(scene);
-      const stopResizeListener = listenForCanvasResize(engine, canvas);
+      const stopResizeListener = listenForCanvasResize(engine, canvas, surfaceCanvas);
 
       plane.material = material;
       camera.setTarget(plane.position);
-      syncSurfaceHost(surfaceHost, this.surface());
-
       const adapter = createHtmlInCanvasAdapter(surfaceCanvas, getWebGpuDevice(engine)?.queue);
       const surfaceTexturePipeline = createHtmlSurfaceTexturePipeline({
         engine,
@@ -288,13 +315,34 @@ export class BicSceneComponent implements AfterViewInit, OnDestroy {
 
       material.diffuseTexture = surfaceTexturePipeline.babylonTexture;
       const stopSurfaceTextureSnapshotListener = surfaceTexturePipeline.onSnapshot(() => {
-        this.surfaceTextureSnapshot.set(surfaceTexturePipeline.snapshot());
+        const snapshot = surfaceTexturePipeline.snapshot();
+        this.surfaceTextureSnapshot.set(snapshot);
+        surfaceHost.dataset['bicTextureSize'] = `${snapshot.size.width}x${snapshot.size.height}`;
+        surfaceHost.dataset['bicTextureUpdates'] = String(snapshot.updateCount);
+        surfaceHost.dataset['bicTextureResizes'] = String(snapshot.resizeCount);
+        surfaceHost.dataset['bicTextureError'] = snapshot.lastError ?? '';
       });
       void surfaceTexturePipeline.requestUpdate('manual');
 
       engine.runRenderLoop(() => {
         scene.render();
-        this.renderSnapshot.set(readRenderSnapshot(engine, canvas, scene, camera, plane, material));
+
+        try {
+          const projection = synchronizeSurfaceProjection(
+            adapter,
+            surfaceCanvas,
+            surfaceHost,
+            plane,
+            scene,
+          );
+          surfaceHost.dataset['bicProjectionReady'] = 'true';
+          surfaceHost.dataset['bicProjectionError'] = String(projection.maximumAlignmentError);
+          this.renderSnapshot.set(readRenderSnapshot(engine, canvas, scene, camera, plane, material, projection));
+        } catch (error) {
+          if (!(error instanceof DOMException && error.name === 'InvalidStateError')) {
+            throw error;
+          }
+        }
       });
 
       this.resources.set({
@@ -306,6 +354,7 @@ export class BicSceneComponent implements AfterViewInit, OnDestroy {
         surfaceTexturePipeline,
         stopSurfaceTextureSnapshotListener,
         stopResizeListener,
+        adapter,
       });
       this.status.set({ kind: 'ready', capabilities: adapter.capabilities() });
     } catch (error) {
@@ -396,8 +445,16 @@ function applySurfaceToPlane(plane: BABYLON.Mesh, surface: SurfaceState): void {
   plane.scaling.set(surface.focused ? 1.03 : 1, surface.focused ? 1.03 : 1, 1);
 }
 
-function listenForCanvasResize(engine: BABYLON.WebGPUEngine, canvas: HTMLCanvasElement): () => void {
-  const resize = () => engine.resize();
+function listenForCanvasResize(
+  engine: BABYLON.WebGPUEngine,
+  canvas: HTMLCanvasElement,
+  surfaceCanvas: HTMLCanvasElement,
+): () => void {
+  const resize = () => {
+    engine.resize();
+    surfaceCanvas.width = canvas.width;
+    surfaceCanvas.height = canvas.height;
+  };
   const observer = new ResizeObserver(resize);
 
   observer.observe(canvas);
@@ -417,6 +474,7 @@ function readRenderSnapshot(
   camera: BABYLON.ArcRotateCamera,
   plane: BABYLON.Mesh,
   material: BABYLON.StandardMaterial,
+  projection: SurfaceProjectionSnapshot,
 ): SceneRenderSnapshot {
   const cameraFacing = readCameraFacing(camera, plane);
 
@@ -431,6 +489,7 @@ function readRenderSnapshot(
     renderHeight: engine.getRenderHeight(),
     activeMeshes: scene.getActiveMeshes().length,
     frameId: scene.getFrameId(),
+    projection,
     camera: {
       position: formatVector(camera.position),
       target: formatVector(camera.target),
@@ -464,10 +523,6 @@ function readCameraFacing(
   const side = dot > 0.001 ? 'front' : dot < -0.001 ? 'back' : 'edge-on';
 
   return { side, dot };
-}
-
-function syncSurfaceHost(host: HTMLElement, surface: SurfaceState): void {
-  host.style.transform = `translate3d(calc(50vw - ${surface.size.width / 2}px), calc(50vh - ${surface.size.height / 2}px), 0)`;
 }
 
 function formatVector(vector: BABYLON.Vector3): string {

@@ -98,32 +98,32 @@ export function createHtmlInCanvasAdapter(canvas: HTMLCanvasElement, queue?: GPU
       const runtimeDestination = { texture: destination };
 
       try {
-        copyElementImageToTexture.call(queue, source, runtimeDestination);
-        return 'element-texture';
-      } catch (runtimeShapeError) {
+        copyElementImageToTexture.call(
+          queue,
+          { source },
+          {
+            destination: runtimeDestination,
+            width: size.width,
+            height: size.height,
+          },
+        );
+        return 'source-destination';
+      } catch (idlShapeError) {
         try {
-          copyElementImageToTexture.call(
-            queue,
-            { source },
-            {
-              destination: runtimeDestination,
-              width: size.width,
-              height: size.height,
-            },
-          );
-          return 'source-destination';
-        } catch (idlShapeError) {
+          copyElementImageToTexture.call(queue, source, runtimeDestination);
+          return 'element-texture';
+        } catch (runtimeShapeError) {
           throw new Error([
             'GPUQueue.copyElementImageToTexture failed for known signatures.',
-            `element-texture: ${toErrorMessage(runtimeShapeError)}`,
             `source-destination: ${toErrorMessage(idlShapeError)}`,
+            `element-texture: ${toErrorMessage(runtimeShapeError)}`,
           ].join(' '));
         }
       }
     },
     getElementTransform(_source, drawTransform): DOMMatrix {
       const transform = (canvas as ExperimentalCanvas).getElementTransform;
-      return transform?.(_source, drawTransform) ?? DOMMatrix.fromMatrix(drawTransform);
+      return transform?.call(canvas, _source, drawTransform) ?? DOMMatrix.fromMatrix(drawTransform);
     },
   };
 }

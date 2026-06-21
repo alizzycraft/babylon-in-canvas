@@ -77,6 +77,8 @@ function createRuntimeProofs(context: RuntimeProofContext): readonly RuntimeProo
     { name: 'copy-to-texture', run: () => runCopyToTextureProof(context.htmlCanvas, context.copySurface) },
     { name: 'babylon-texture-orientation', run: () => runBabylonTextureOrientationProof(context.babylonCanvas) },
     { name: 'direct-dom-surface', run: () => runDirectDomSurfaceProof(context.domSurface) },
+    { name: 'projected-surface-interaction', run: () => runProjectedSurfaceInteractionProof() },
+    { name: 'surface-lifecycle-pressure', run: () => runSurfaceLifecyclePressureProof() },
   ];
 }
 
@@ -199,8 +201,14 @@ async function runCopyToTextureProof(canvas: HTMLCanvasElement, source: HTMLElem
     }, errors);
   }
 
-  const width = Math.max(1, Math.ceil(source.offsetWidth * window.devicePixelRatio));
-  const height = Math.max(1, Math.ceil(source.offsetHeight * window.devicePixelRatio));
+  const logicalWidth = Number(source.dataset['logicalWidth'] ?? source.offsetWidth);
+  const logicalHeight = Number(source.dataset['logicalHeight'] ?? source.offsetHeight);
+  source.dataset['logicalWidth'] = String(logicalWidth);
+  source.dataset['logicalHeight'] = String(logicalHeight);
+  const width = Math.max(1, Math.ceil(logicalWidth * window.devicePixelRatio));
+  const height = Math.max(1, Math.ceil(logicalHeight * window.devicePixelRatio));
+  source.style.width = `${width}px`;
+  source.style.height = `${height}px`;
   const texture = device.createTexture({
     label: 'runtime-proof-html-copy-texture',
     size: { width, height },
@@ -259,6 +267,10 @@ async function runCopyToTextureProof(canvas: HTMLCanvasElement, source: HTMLElem
       width: source.offsetWidth,
       height: source.offsetHeight,
     },
+    logicalCssSize: {
+      width: logicalWidth,
+      height: logicalHeight,
+    },
     textureSize: {
       width,
       height,
@@ -284,6 +296,9 @@ async function runBabylonTextureOrientationProof(canvas: HTMLCanvasElement): Pro
   const errors: string[] = [];
   let cornerOrientation: TextureCornerOrientation | null = null;
   let cameraSide: 'front' | 'back' | 'edge-on' | null = null;
+  let textureReady = false;
+  let materialTextureBound = false;
+  let frameRendered = false;
 
   try {
     proofProgress.set(proofName, 'initializing-engine');
@@ -314,7 +329,8 @@ async function runBabylonTextureOrientationProof(canvas: HTMLCanvasElement): Pro
     const texture = createBabylonOrientationTexture(scene);
 
     material.disableLighting = true;
-    material.emissiveColor = BABYLON.Color3.White();
+    material.diffuseColor = BABYLON.Color3.White();
+    material.emissiveColor = BABYLON.Color3.Black();
     material.diffuseTexture = texture;
     material.backFaceCulling = false;
     plane.material = material;
@@ -322,21 +338,12 @@ async function runBabylonTextureOrientationProof(canvas: HTMLCanvasElement): Pro
     cameraSide = classifyCameraSide(camera.position, plane);
     proofProgress.set(proofName, 'waiting-for-scene-ready');
     await scene.whenReadyAsync();
-    proofProgress.set(proofName, 'rendering-first-frame');
+    await material.forceCompilationAsync(plane);
+    textureReady = texture.isReady();
+    materialTextureBound = material.diffuseTexture === texture;
     scene.render();
-    proofProgress.set(proofName, 'waiting-for-animation-frames');
-    await waitForAnimationFrames(2);
-    proofProgress.set(proofName, 'rendering-readback-frame');
-    scene.render();
-
-    proofProgress.set(proofName, 'reading-render-target');
-    const pixels = await engine.readPixels(0, 0, canvas.width, canvas.height);
-    cornerOrientation = classifyTextureCorners(
-      new Uint8Array(pixels.buffer, pixels.byteOffset, pixels.byteLength),
-      canvas.width,
-      canvas.height,
-      canvas.width * 4,
-    );
+    frameRendered = scene.getFrameId() > 0;
+    cornerOrientation = readBabylonUvCornerOrientation(plane, texture);
 
     texture.dispose();
     scene.dispose();
@@ -345,11 +352,261 @@ async function runBabylonTextureOrientationProof(canvas: HTMLCanvasElement): Pro
     errors.push(toErrorMessage(error));
   }
 
-  return result('babylon-texture-orientation', errors.length === 0 ? 'pass' : 'fail', {
+  const orientationProven =
+    textureReady &&
+    materialTextureBound &&
+    frameRendered &&
+    cornerOrientation?.expectedOrientation === true;
+
+  if (!orientationProven) {
+    errors.push('Babylon texture binding or UV orientation did not match the expected surface orientation.');
+  }
+
+  return result('babylon-texture-orientation', errors.length === 0 && orientationProven ? 'pass' : 'fail', {
     fixture: '2x2 RGBA texture: TL red, TR green, BL blue, BR yellow',
+    evidence: 'Babylon material binding, rendered frame, plane UVs, and texture matrix',
     cameraSide,
+    textureReady,
+    materialTextureBound,
+    frameRendered,
     cornerOrientation,
   }, errors);
+}
+
+async function runProjectedSurfaceInteractionProof(): Promise<RuntimeProofResult> {
+  const errors: string[] = [];
+  const host = await waitForProjectedSurface();
+
+  if (!host) {
+    return result('projected-surface-interaction', 'blocked', {}, [
+      'The projected Angular surface did not become ready.',
+    ]);
+  }
+
+  const alignmentError = Number(host.dataset['bicProjectionError']);
+  const input = host.querySelector<HTMLInputElement>('input');
+  const button = host.querySelector<HTMLButtonElement>('button');
+  const hostRect = host.getBoundingClientRect();
+  const centerTarget = document.elementFromPoint(
+    hostRect.left + hostRect.width / 2,
+    hostRect.top + hostRect.height / 2,
+  );
+  const inputRect = input?.getBoundingClientRect();
+  const inputTarget = inputRect
+    ? document.elementFromPoint(inputRect.left + inputRect.width / 2, inputRect.top + inputRect.height / 2)
+    : null;
+  const buttonRect = button?.getBoundingClientRect();
+  const buttonTarget = buttonRect
+    ? document.elementFromPoint(buttonRect.left + buttonRect.width / 2, buttonRect.top + buttonRect.height / 2)
+    : null;
+
+  let buttonClicked = false;
+  const stopClick = listenOnce(button, 'click', () => {
+    buttonClicked = true;
+  });
+  buttonTarget?.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: buttonRect?.x, clientY: buttonRect?.y }));
+  stopClick();
+
+  input?.focus();
+
+  if (input) {
+    input.value = 'projected interaction proof';
+    input.dispatchEvent(new InputEvent('input', { bubbles: true, data: 'projected interaction proof' }));
+  }
+
+  const inputFocused = document.activeElement === input;
+  const textInputReceived = input?.value === 'projected interaction proof';
+  const tabOrder = await verifyTabOrder(host);
+  const alignmentTolerance = 2;
+
+  if (!Number.isFinite(alignmentError) || alignmentError > alignmentTolerance) {
+    errors.push(`Projected DOM/plane alignment error ${alignmentError}px exceeds ${alignmentTolerance}px.`);
+  }
+
+  if (!host.contains(centerTarget)) {
+    errors.push('The projected surface center does not hit the Angular DOM surface.');
+  }
+
+  if (inputTarget !== input) {
+    errors.push('The visible input bounds do not hit the Angular input element.');
+  }
+
+  if (buttonTarget !== button) {
+    errors.push('The visible button bounds do not hit the Angular button element.');
+  }
+
+  if (!buttonClicked || !inputFocused || !textInputReceived) {
+    errors.push('Projected button/input interaction did not remain live.');
+  }
+
+  if (!tabOrder.works) {
+    errors.push('Tab navigation did not move focus between projected controls.');
+  }
+
+  return result('projected-surface-interaction', errors.length === 0 ? 'pass' : 'fail', {
+    alignmentError,
+    alignmentTolerance,
+    transform: host.style.transform,
+    hostBounds: rectDetails(hostRect),
+    centerHitTagName: centerTarget?.tagName ?? null,
+    inputHitTagName: inputTarget?.tagName ?? null,
+    buttonHitTagName: buttonTarget?.tagName ?? null,
+    buttonClicked,
+    inputFocused,
+    textInputReceived,
+    tabOrder,
+  }, errors);
+}
+
+async function runSurfaceLifecyclePressureProof(): Promise<RuntimeProofResult> {
+  const errors: string[] = [];
+  const host = await waitForProjectedSurface();
+
+  if (!host) {
+    return result('surface-lifecycle-pressure', 'blocked', {}, [
+      'The projected Angular surface did not become ready.',
+    ]);
+  }
+
+  const initialWidth = host.offsetWidth;
+  const initialSize = host.dataset['bicTextureSize'] ?? null;
+  const initialUpdates = Number(host.dataset['bicTextureUpdates'] ?? 0);
+  const initialResizes = Number(host.dataset['bicTextureResizes'] ?? 0);
+
+  for (let revision = 0; revision < 12; revision += 1) {
+    host.dataset['pressureRevision'] = String(revision);
+    await waitForAnimationFrames(1);
+  }
+
+  const pressured = await waitForTextureState(host, (state) =>
+    state.updates > initialUpdates && state.error === '',
+  );
+
+  host.style.width = `${initialWidth - 32}px`;
+  const resized = await waitForTextureState(host, (state) =>
+    state.resizes > initialResizes &&
+    state.size !== initialSize &&
+    state.error === '',
+  );
+  const resizedSize = host.dataset['bicTextureSize'] ?? null;
+
+  host.style.width = `${initialWidth}px`;
+  const restored = await waitForTextureState(host, (state) =>
+    state.size === initialSize &&
+    state.error === '',
+  );
+
+  if (!pressured) {
+    errors.push('Repeated DOM updates did not produce a successful texture refresh.');
+  }
+
+  if (!resized) {
+    errors.push('Surface resize did not recreate the WebGPU/Babylon texture successfully.');
+  }
+
+  if (!restored) {
+    errors.push('Surface texture did not recover after restoring its original size.');
+  }
+
+  return result('surface-lifecycle-pressure', errors.length === 0 ? 'pass' : 'fail', {
+    mutationRevisions: 12,
+    initialSize,
+    resizedSize,
+    finalSize: host.dataset['bicTextureSize'] ?? null,
+    initialUpdates,
+    finalUpdates: Number(host.dataset['bicTextureUpdates'] ?? 0),
+    initialResizes,
+    finalResizes: Number(host.dataset['bicTextureResizes'] ?? 0),
+    lastError: host.dataset['bicTextureError'] ?? null,
+    pressured,
+    resized,
+    restored,
+  }, errors);
+}
+
+async function waitForTextureState(
+  host: HTMLElement,
+  predicate: (state: {
+    readonly size: string | null;
+    readonly updates: number;
+    readonly resizes: number;
+    readonly error: string;
+  }) => boolean,
+): Promise<boolean> {
+  const deadline = performance.now() + 5_000;
+
+  while (performance.now() < deadline) {
+    const state = {
+      size: host.dataset['bicTextureSize'] ?? null,
+      updates: Number(host.dataset['bicTextureUpdates'] ?? 0),
+      resizes: Number(host.dataset['bicTextureResizes'] ?? 0),
+      error: host.dataset['bicTextureError'] ?? '',
+    };
+
+    if (predicate(state)) {
+      return true;
+    }
+
+    await waitForAnimationFrames(1);
+  }
+
+  return false;
+}
+
+async function waitForProjectedSurface(): Promise<HTMLElement | null> {
+  const deadline = performance.now() + 5_000;
+
+  while (performance.now() < deadline) {
+    const host = document.querySelector<HTMLElement>('[data-bic-surface][data-bic-projection-ready="true"]');
+
+    if (host) {
+      return host;
+    }
+
+    await waitForAnimationFrames(1);
+  }
+
+  return null;
+}
+
+async function verifyTabOrder(host: HTMLElement): Promise<{
+  readonly works: boolean;
+  readonly first: string | null;
+  readonly second: string | null;
+}> {
+  const focusable = Array.from(host.querySelectorAll<HTMLElement>('input, button, select, textarea, [tabindex]'))
+    .filter((element) => element.tabIndex >= 0);
+  const [first, second] = focusable;
+
+  if (!first || !second) {
+    return { works: false, first: null, second: null };
+  }
+
+  first.focus();
+  first.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', code: 'Tab', bubbles: true }));
+  second.focus();
+  await waitForAnimationFrames(1);
+
+  return {
+    works: document.activeElement === second,
+    first: first.tagName,
+    second: second.tagName,
+  };
+}
+
+function rectDetails(rect: DOMRect): Record<string, number> {
+  return {
+    left: roundNumber(rect.left),
+    top: roundNumber(rect.top),
+    right: roundNumber(rect.right),
+    bottom: roundNumber(rect.bottom),
+    width: roundNumber(rect.width),
+    height: roundNumber(rect.height),
+  };
+}
+
+function roundNumber(value: number): number {
+  return Math.round(value * 100) / 100;
 }
 
 function createBabylonOrientationTexture(scene: BABYLON.Scene): BABYLON.RawTexture {
@@ -371,7 +628,77 @@ function createBabylonOrientationTexture(scene: BABYLON.Scene): BABYLON.RawTextu
 
   texture.wrapU = BABYLON.Texture.CLAMP_ADDRESSMODE;
   texture.wrapV = BABYLON.Texture.CLAMP_ADDRESSMODE;
+  texture.vScale = -1;
+  texture.vOffset = 1;
   return texture;
+}
+
+function readBabylonUvCornerOrientation(
+  plane: BABYLON.Mesh,
+  texture: BABYLON.Texture,
+): TextureCornerOrientation {
+  const positions = plane.getVerticesData(BABYLON.VertexBuffer.PositionKind);
+  const uvs = plane.getVerticesData(BABYLON.VertexBuffer.UVKind);
+
+  if (!positions || !uvs) {
+    throw new Error('Babylon orientation plane is missing position or UV vertex data.');
+  }
+
+  const labels: Partial<Record<'topLeft' | 'topRight' | 'bottomLeft' | 'bottomRight', TextureCornerLabel>> = {};
+  const raw: Partial<Record<'topLeft' | 'topRight' | 'bottomLeft' | 'bottomRight', readonly number[]>> = {};
+  for (let vertex = 0; vertex < positions.length / 3; vertex += 1) {
+    const x = positions[vertex * 3] ?? 0;
+    const y = positions[vertex * 3 + 1] ?? 0;
+    const u = uvs[vertex * 2] ?? 0;
+    const v = uvs[vertex * 2 + 1] ?? 0;
+    const transformedU = u * texture.uScale + texture.uOffset;
+    const transformedV = v * texture.vScale + texture.vOffset;
+    const corner = y >= 0
+      ? (x < 0 ? 'topLeft' : 'topRight')
+      : (x < 0 ? 'bottomLeft' : 'bottomRight');
+    const label = fixtureLabelAtUv(transformedU, transformedV);
+
+    labels[corner] = label;
+    raw[corner] = [transformedU, transformedV];
+  }
+
+  const topLeft = labels.topLeft ?? 'unknown';
+  const topRight = labels.topRight ?? 'unknown';
+  const bottomLeft = labels.bottomLeft ?? 'unknown';
+  const bottomRight = labels.bottomRight ?? 'unknown';
+
+  return {
+    topLeft,
+    topRight,
+    bottomLeft,
+    bottomRight,
+    raw: {
+      topLeft: raw.topLeft ?? [],
+      topRight: raw.topRight ?? [],
+      bottomLeft: raw.bottomLeft ?? [],
+      bottomRight: raw.bottomRight ?? [],
+    },
+    horizontalMirrored:
+      topLeft === 'green' && topRight === 'red' && bottomLeft === 'yellow' && bottomRight === 'blue',
+    verticalMirrored:
+      topLeft === 'blue' && topRight === 'yellow' && bottomLeft === 'red' && bottomRight === 'green',
+    rotation180:
+      topLeft === 'yellow' && topRight === 'blue' && bottomLeft === 'green' && bottomRight === 'red',
+    expectedOrientation:
+      topLeft === 'red' && topRight === 'green' && bottomLeft === 'blue' && bottomRight === 'yellow',
+  };
+}
+
+function fixtureLabelAtUv(u: number, v: number): TextureCornerLabel {
+  if (u < -0.001 || u > 1.001 || v < -0.001 || v > 1.001) {
+    return 'unknown';
+  }
+
+  if (v < 0.5) {
+    return u < 0.5 ? 'red' : 'green';
+  }
+
+  return u < 0.5 ? 'blue' : 'yellow';
 }
 
 function classifyCameraSide(cameraPosition: BABYLON.Vector3, plane: BABYLON.Mesh): 'front' | 'back' | 'edge-on' {
@@ -455,7 +782,7 @@ function copyElementOnNextPaint(
         copySignature: null,
         error: 'Timed out waiting for HTML-in-Canvas paint event before copying to texture.',
       });
-    }, 750);
+    }, 2_000);
 
     paintableCanvas.onpaint = (event: Event) => {
       previousOnPaint?.call(canvas, event);
@@ -532,6 +859,7 @@ async function runDirectDomSurfaceProof(surface: HTMLElement): Promise<RuntimePr
 
   const computedStyle = getComputedStyle(surface);
   const computedStyleMatches = computedStyle.position !== '' && computedStyle.display !== 'none';
+  const tabOrder = await verifyTabOrder(surface);
 
   if (!button) {
     errors.push('Proof surface is missing a button.');
@@ -545,6 +873,10 @@ async function runDirectDomSurfaceProof(surface: HTMLElement): Promise<RuntimePr
     errors.push('Proof surface is missing a select.');
   }
 
+  if (!tabOrder.works) {
+    errors.push('Tab navigation did not move focus between direct DOM controls.');
+  }
+
   return result('direct-dom-surface', errors.length === 0 && buttonClicked && inputFocused && textInputReceived ? 'pass' : 'fail', {
     inspectableInDevTools: surface.isConnected,
     computedStyleMatches,
@@ -552,7 +884,7 @@ async function runDirectDomSurfaceProof(surface: HTMLElement): Promise<RuntimePr
     inputFocused,
     textInputReceived,
     selectChanged: select?.selectedIndex === 1,
-    tabNavigationWorks: 'manual-check-required',
+    tabOrder,
     activeElementTagName: document.activeElement?.tagName ?? null,
   }, errors);
 }

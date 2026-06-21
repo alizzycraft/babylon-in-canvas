@@ -7,6 +7,10 @@ import { applyExperimentalChromiumFlags } from './chromium-flags.js';
 
 applyExperimentalChromiumFlags();
 
+if (!app.isPackaged) {
+  app.commandLine.appendSwitch('remote-debugging-port', process.env['BIC_REMOTE_DEBUGGING_PORT'] ?? '9222');
+}
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const devServerUrl = 'http://127.0.0.1:4200';
 const runtimeProofReportDirectory = join(process.cwd(), 'docs', 'runtime-proof-runs');
@@ -62,6 +66,11 @@ function createMainWindow(): BrowserWindow {
   }
 
   win.webContents.openDevTools({ mode: 'detach' });
+  win.webContents.on('console-message', (details) => {
+    console.log(
+      `[renderer:${details.level}] ${details.message} (${details.sourceId}:${details.lineNumber})`,
+    );
+  });
 
   return win;
 }
