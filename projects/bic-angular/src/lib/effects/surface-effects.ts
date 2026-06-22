@@ -1,4 +1,27 @@
-import * as BABYLON from '@babylonjs/core';
+import {
+  Color3,
+  GlowLayer,
+  Mesh,
+  MeshBuilder,
+  RegisterGlowLayer,
+  Scene,
+  StandardMaterial,
+} from '@babylonjs/core/pure.js';
+import { glowBlurPostProcessPixelShaderWGSL } from '@babylonjs/core/ShadersWGSL/glowBlurPostProcess.fragment.js';
+import { glowMapGenerationPixelShaderWGSL } from '@babylonjs/core/ShadersWGSL/glowMapGeneration.fragment.js';
+import { glowMapGenerationVertexShaderWGSL } from '@babylonjs/core/ShadersWGSL/glowMapGeneration.vertex.js';
+import { glowMapMergePixelShaderWGSL } from '@babylonjs/core/ShadersWGSL/glowMapMerge.fragment.js';
+import { glowMapMergeVertexShaderWGSL } from '@babylonjs/core/ShadersWGSL/glowMapMerge.vertex.js';
+
+const BABYLON = { Color3, GlowLayer, MeshBuilder, StandardMaterial };
+RegisterGlowLayer();
+void [
+  glowBlurPostProcessPixelShaderWGSL,
+  glowMapGenerationPixelShaderWGSL,
+  glowMapGenerationVertexShaderWGSL,
+  glowMapMergePixelShaderWGSL,
+  glowMapMergeVertexShaderWGSL,
+];
 
 export const BIC_DEPTH_SURFACE_CLEARANCE = 0.002;
 
@@ -23,15 +46,15 @@ export function readBicSpatialEffectValues(element: HTMLElement): BicSpatialEffe
 }
 
 export class BicSurfaceEffects {
-  private readonly depthMesh: BABYLON.Mesh;
-  private readonly depthMaterial: BABYLON.StandardMaterial;
-  private readonly glowLayer: BABYLON.GlowLayer;
+  private readonly depthMesh: Mesh;
+  private readonly depthMaterial: StandardMaterial;
+  private readonly glowLayer: GlowLayer;
   private lastSignature = '';
 
   constructor(
-    scene: BABYLON.Scene,
-    private readonly root: BABYLON.Mesh,
-    private readonly renderMeshes: readonly BABYLON.Mesh[],
+    scene: Scene,
+    private readonly root: Mesh,
+    private readonly renderMeshes: readonly Mesh[],
     private readonly host: HTMLElement,
     id: string,
     private readonly supportsDepth = true,

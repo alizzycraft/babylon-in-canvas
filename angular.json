@@ -50,8 +50,8 @@
               "budgets": [
                 {
                   "type": "initial",
-                  "maximumWarning": "7MB",
-                  "maximumError": "8MB"
+                  "maximumWarning": "2MB",
+                  "maximumError": "2.25MB"
                 }
               ],
               "outputHashing": "all"
@@ -66,6 +66,13 @@
         },
         "serve": {
           "builder": "@angular/build:dev-server",
+          "options": {
+            "prebundle": {
+              "exclude": [
+                "@babylonjs/core"
+              ]
+            }
+          },
           "configurations": {
             "production": {
               "buildTarget": "babylon-in-canvas:build:production"

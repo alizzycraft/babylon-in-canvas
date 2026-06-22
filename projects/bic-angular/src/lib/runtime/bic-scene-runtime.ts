@@ -1,5 +1,28 @@
 import { Injectable, signal } from '@angular/core';
-import * as BABYLON from '@babylonjs/core';
+import {
+  ArcRotateCamera,
+  Color3,
+  Color4,
+  HemisphericLight,
+  Material,
+  Mesh,
+  MeshBuilder,
+  RegisterBufferAlign,
+  RegisterStandardMaterial,
+  RegisterVertexBuffer,
+  Scene,
+  StandardMaterial,
+  Texture,
+  Vector3,
+  VertexData,
+  WebGPUEngine,
+  type WebGPUEngineOptions,
+} from '@babylonjs/core/pure.js';
+import { RegisterFullWebGPUEngineExtensions } from '@babylonjs/core/Engines/WebGPU/webgpuEngineRegistration.pure.js';
+import { clearQuadPixelShaderWGSL } from '@babylonjs/core/ShadersWGSL/clearQuad.fragment.js';
+import { clearQuadVertexShaderWGSL } from '@babylonjs/core/ShadersWGSL/clearQuad.vertex.js';
+import { defaultPixelShaderWGSL } from '@babylonjs/core/ShadersWGSL/default.fragment.js';
+import { defaultVertexShaderWGSL } from '@babylonjs/core/ShadersWGSL/default.vertex.js';
 import { BicSurfaceEffects, BicSpatialEffectValues } from '../effects/surface-effects';
 import {
   HtmlInCanvasCapabilities,
@@ -21,8 +44,33 @@ import {
 } from '../core/surface-projection';
 import { SurfacePrimitive, SurfaceState } from '../core/surface-types';
 
+const BABYLON = {
+  ArcRotateCamera,
+  Color3,
+  Color4,
+  HemisphericLight,
+  Mesh,
+  MeshBuilder,
+  Scene,
+  StandardMaterial,
+  Vector3,
+  VertexData,
+  WebGPUEngine,
+};
+
+RegisterFullWebGPUEngineExtensions();
+RegisterVertexBuffer();
+RegisterBufferAlign();
+RegisterStandardMaterial();
+void [
+  clearQuadVertexShaderWGSL,
+  clearQuadPixelShaderWGSL,
+  defaultVertexShaderWGSL,
+  defaultPixelShaderWGSL,
+];
+
 export interface BicSceneRuntimeOptions {
-  readonly engineOptions?: BABYLON.WebGPUEngineOptions;
+  readonly engineOptions?: WebGPUEngineOptions;
 }
 
 export type BicSceneRuntimeStatus =
@@ -73,9 +121,9 @@ export interface BicSurfaceRegistration {
 }
 
 interface SceneResources {
-  readonly engine: BABYLON.WebGPUEngine;
-  readonly scene: BABYLON.Scene;
-  readonly camera: BABYLON.ArcRotateCamera;
+  readonly engine: WebGPUEngine;
+  readonly scene: Scene;
+  readonly camera: ArcRotateCamera;
   readonly canvas: HTMLCanvasElement;
   readonly surfaceCanvas: HTMLCanvasElement;
   readonly adapter: ReturnType<typeof createHtmlInCanvasAdapter>;
@@ -86,9 +134,9 @@ interface SceneResources {
 
 interface SurfaceResources {
   readonly host: HTMLElement;
-  readonly mesh: BABYLON.Mesh;
-  readonly renderMeshes: readonly BABYLON.Mesh[];
-  readonly material: BABYLON.Material;
+  readonly mesh: Mesh;
+  readonly renderMeshes: readonly Mesh[];
+  readonly material: Material;
   readonly pipeline: HtmlSurfaceTexturePipeline;
   readonly effects: BicSurfaceEffects;
   stopPipelineListener: () => void;
@@ -584,9 +632,9 @@ export class BicSceneRuntime {
 }
 
 function createCamera(
-  scene: BABYLON.Scene,
+  scene: Scene,
   canvas: HTMLCanvasElement,
-): BABYLON.ArcRotateCamera {
+): ArcRotateCamera {
   const camera = new BABYLON.ArcRotateCamera(
     'bic-camera',
     -Math.PI / 2,
@@ -602,7 +650,7 @@ function createCamera(
   return camera;
 }
 
-function applySurfaceState(mesh: BABYLON.Mesh, state: SurfaceState): void {
+function applySurfaceState(mesh: Mesh, state: SurfaceState): void {
   mesh.position.set(state.position.x, state.position.y, state.position.z);
   mesh.rotation.set(state.rotation.x, state.rotation.y, state.rotation.z);
   mesh.scaling.set(state.size.width / 240, state.size.height / 240, 1);
@@ -616,14 +664,14 @@ function disposeSurfaceResources(surface: SurfaceResources): void {
 }
 
 interface CreatedSurfaceMesh {
-  readonly mesh: BABYLON.Mesh;
-  readonly renderMeshes: readonly BABYLON.Mesh[];
+  readonly mesh: Mesh;
+  readonly renderMeshes: readonly Mesh[];
 }
 
 function createSurfaceMesh(
   id: string,
   primitive: SurfacePrimitive,
-  scene: BABYLON.Scene,
+  scene: Scene,
 ): CreatedSurfaceMesh {
   if (primitive.kind === 'plane') {
     const plane = BABYLON.MeshBuilder.CreatePlane(id, { size: 1 }, scene);
@@ -676,10 +724,10 @@ function createSurfaceMesh(
 
 function createSurfaceMaterial(
   id: string,
-  texture: BABYLON.Texture,
+  texture: Texture,
   primitive: SurfacePrimitive,
-  scene: BABYLON.Scene,
-): BABYLON.Material {
+  scene: Scene,
+): Material {
   const material = new BABYLON.StandardMaterial(`${id}-material`, scene);
 
   material.diffuseColor = BABYLON.Color3.Black();
@@ -743,7 +791,7 @@ interface DisplayMetricsListener {
 }
 
 function listenForCanvasResize(
-  engine: BABYLON.WebGPUEngine,
+  engine: WebGPUEngine,
   canvas: HTMLCanvasElement,
   surfaceCanvas: HTMLCanvasElement,
   onMetrics: (metrics: Omit<BicDisplayMetricsSnapshot, 'revision'>) => void,
@@ -816,7 +864,7 @@ function readDevicePixelRatio(): number {
   return Math.max(window.devicePixelRatio || 1, 1);
 }
 
-function getWebGpuDevice(engine: BABYLON.WebGPUEngine): GPUDevice | undefined {
+function getWebGpuDevice(engine: WebGPUEngine): GPUDevice | undefined {
   return (engine as unknown as { readonly _device?: GPUDevice })._device;
 }
 

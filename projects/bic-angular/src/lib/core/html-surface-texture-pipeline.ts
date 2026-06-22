@@ -1,4 +1,9 @@
-import * as BABYLON from '@babylonjs/core';
+import {
+  InternalTexture,
+  Scene,
+  Texture,
+  WebGPUEngine,
+} from '@babylonjs/core/pure.js';
 import { createHtmlInCanvasAdapter, type SurfaceTextureSize } from './html-in-canvas-adapter';
 
 // Owns the zero-readback DOM-to-WebGPU-to-Babylon texture lifecycle.
@@ -17,8 +22,8 @@ const gpuMapMode = {
 } as const;
 
 export interface HtmlSurfaceTexturePipelineOptions {
-  readonly engine: BABYLON.WebGPUEngine;
-  readonly scene: BABYLON.Scene;
+  readonly engine: WebGPUEngine;
+  readonly scene: Scene;
   readonly canvas: HTMLCanvasElement;
   readonly source: HTMLElement;
   readonly deviceRecoveryCount?: number;
@@ -55,7 +60,7 @@ export interface HtmlSurfaceCornerOrientation {
 }
 
 export interface HtmlSurfaceTexturePipeline {
-  readonly babylonTexture: BABYLON.Texture;
+  readonly babylonTexture: Texture;
   onSnapshot(listener: HtmlSurfaceTextureSnapshotListener): () => void;
   requestUpdate(reason?: HtmlSurfaceTextureUpdateReason): Promise<void>;
   snapshot(): HtmlSurfaceTextureSnapshot;
@@ -75,11 +80,11 @@ type PaintableCanvas = HTMLCanvasElement & {
   onpaint?: ((event: Event) => void) | null;
 };
 
-type WebGpuTextureWrappingEngine = BABYLON.WebGPUEngine & {
-  wrapWebGPUTexture(texture: GPUTexture): BABYLON.InternalTexture;
+type WebGpuTextureWrappingEngine = WebGPUEngine & {
+  wrapWebGPUTexture(texture: GPUTexture): InternalTexture;
 };
 
-type WebGpuHardwareTextureBackedInternalTexture = BABYLON.InternalTexture & {
+type WebGpuHardwareTextureBackedInternalTexture = InternalTexture & {
   readonly _hardwareTexture?: {
     setUsage(
       textureSource: number,
@@ -101,7 +106,7 @@ export function createHtmlSurfaceTexturePipeline(
 }
 
 class DefaultHtmlSurfaceTexturePipeline implements HtmlSurfaceTexturePipeline {
-  readonly babylonTexture: BABYLON.Texture;
+  readonly babylonTexture: Texture;
 
   private readonly adapter;
   private readonly device: GPUDevice;
@@ -145,16 +150,16 @@ class DefaultHtmlSurfaceTexturePipeline implements HtmlSurfaceTexturePipeline {
 
     const internalTexture = (options.engine as WebGpuTextureWrappingEngine).wrapWebGPUTexture(this.gpuTexture);
     initializeWrappedTextureView(internalTexture, this.size);
-    this.babylonTexture = new BABYLON.Texture(null, options.scene, {
+    this.babylonTexture = new Texture(null, options.scene, {
       noMipmap: true,
       invertY: false,
-      samplingMode: BABYLON.Texture.BILINEAR_SAMPLINGMODE,
+      samplingMode: Texture.BILINEAR_SAMPLINGMODE,
       internalTexture,
       gammaSpace: false,
     });
     this.babylonTexture.name = `${options.source.dataset['bicSurface'] ?? 'html-surface'}-texture`;
-    this.babylonTexture.wrapU = BABYLON.Texture.CLAMP_ADDRESSMODE;
-    this.babylonTexture.wrapV = BABYLON.Texture.CLAMP_ADDRESSMODE;
+    this.babylonTexture.wrapU = Texture.CLAMP_ADDRESSMODE;
+    this.babylonTexture.wrapV = Texture.CLAMP_ADDRESSMODE;
     // HTML-in-Canvas copies DOM pixels with a top-left texture origin, while
     // Babylon's plane UVs address V from bottom to top. Convert that boundary
     // once in texture space without changing world, camera, or surface state.
@@ -431,7 +436,7 @@ function createSurfaceGpuTexture(device: GPUDevice, size: SurfaceTextureSize): G
 }
 
 function initializeWrappedTextureView(
-  internalTexture: BABYLON.InternalTexture,
+  internalTexture: InternalTexture,
   size: SurfaceTextureSize,
 ): void {
   const texture = internalTexture as WebGpuHardwareTextureBackedInternalTexture;
@@ -689,7 +694,7 @@ function classifyCorner([red, green, blue, alpha]: readonly number[]): string {
   return closestDistance <= 220 ? closest : 'unknown';
 }
 
-function getWebGpuDevice(engine: BABYLON.WebGPUEngine): GPUDevice | undefined {
+function getWebGpuDevice(engine: WebGPUEngine): GPUDevice | undefined {
   return (engine as unknown as { readonly _device?: GPUDevice })._device;
 }
 

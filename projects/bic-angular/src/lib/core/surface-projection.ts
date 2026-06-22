@@ -1,4 +1,4 @@
-import * as BABYLON from '@babylonjs/core';
+import { Mesh, Scene, Vector3, Viewport } from '@babylonjs/core/pure.js';
 import { HtmlInCanvasAdapter } from './html-in-canvas-adapter';
 
 // Version-one projection contract: one flat rectangular DOM surface per plane.
@@ -23,8 +23,8 @@ export function synchronizeSurfaceProjection(
   adapter: HtmlInCanvasAdapter,
   canvas: HTMLCanvasElement,
   source: HTMLElement,
-  plane: BABYLON.Mesh,
-  scene: BABYLON.Scene,
+  plane: Mesh,
+  scene: Scene,
 ): SurfaceProjectionSnapshot {
   const width = source.offsetWidth;
   const height = source.offsetHeight;
@@ -89,15 +89,15 @@ function applyTransform(source: HTMLElement, transform: DOMMatrix): void {
 }
 
 export function projectSurfaceBounds(
-  mesh: BABYLON.Mesh,
-  scene: BABYLON.Scene,
+  mesh: Mesh,
+  scene: Scene,
   canvas: HTMLCanvasElement,
 ): SurfaceBounds {
   mesh.computeWorldMatrix(true);
   const boundingBox = mesh.getBoundingInfo().boundingBox;
-  const viewport = new BABYLON.Viewport(0, 0, canvas.width, canvas.height);
+  const viewport = new Viewport(0, 0, canvas.width, canvas.height);
   const projected = boundingBox.vectors.map((corner) =>
-    BABYLON.Vector3.Project(
+    Vector3.Project(
       corner,
       mesh.getWorldMatrix(),
       scene.getTransformMatrix(),

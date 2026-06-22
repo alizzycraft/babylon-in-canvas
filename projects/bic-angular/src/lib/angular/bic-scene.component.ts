@@ -10,7 +10,7 @@ import {
   output,
   viewChild,
 } from '@angular/core';
-import * as BABYLON from '@babylonjs/core';
+import type { WebGPUEngineOptions } from '@babylonjs/core/pure.js';
 import {
   BicSceneRuntime,
   BicSceneRuntimeStatus,
@@ -97,7 +97,7 @@ import {
 })
 export class BicSceneComponent implements AfterViewInit, OnDestroy {
   readonly runtime = inject(BicSceneRuntime);
-  readonly engineOptions = input<BABYLON.WebGPUEngineOptions>({});
+  readonly engineOptions = input<WebGPUEngineOptions>({});
   readonly diagnostics = input(false);
   readonly ready = output<void>();
   readonly runtimeError = output<string>();

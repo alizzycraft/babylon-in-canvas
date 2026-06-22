@@ -1,5 +1,21 @@
 import { Injectable } from '@angular/core';
-import * as BABYLON from '@babylonjs/core';
+import {
+  ArcRotateCamera,
+  Camera,
+  Color3,
+  Color4,
+  FreeCamera,
+  HemisphericLight,
+  Mesh,
+  MeshBuilder,
+  RawTexture,
+  Scene,
+  StandardMaterial,
+  Texture,
+  Vector3,
+  VertexBuffer,
+  WebGPUEngine,
+} from '@babylonjs/core/pure.js';
 import { BicSceneRuntime } from '@babylon-in-canvas/angular';
 import {
   auditHtmlInCanvasCapabilities,
@@ -8,6 +24,23 @@ import {
 } from '@bic-internal/core/html-in-canvas-adapter';
 import '../bic/core/runtime-environment';
 import { RuntimeProof, RuntimeProofResult, RuntimeProofStatus } from './runtime-proof.types';
+
+const BABYLON = {
+  ArcRotateCamera,
+  Camera,
+  Color3,
+  Color4,
+  FreeCamera,
+  HemisphericLight,
+  MeshBuilder,
+  RawTexture,
+  Scene,
+  StandardMaterial,
+  Texture,
+  Vector3,
+  VertexBuffer,
+  WebGPUEngine,
+};
 
 const requiredNodeRanges = '^22.22.3 || ^24.15.0 || ^26.0.0';
 const gpuTextureUsage = {
@@ -1375,7 +1408,7 @@ function roundNumber(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
-function createBabylonOrientationTexture(scene: BABYLON.Scene): BABYLON.RawTexture {
+function createBabylonOrientationTexture(scene: Scene): RawTexture {
   const pixels = new Uint8Array([
     255, 0, 0, 255,
     0, 255, 0, 255,
@@ -1400,8 +1433,8 @@ function createBabylonOrientationTexture(scene: BABYLON.Scene): BABYLON.RawTextu
 }
 
 function readBabylonUvCornerOrientation(
-  plane: BABYLON.Mesh,
-  texture: BABYLON.Texture,
+  plane: Mesh,
+  texture: Texture,
 ): TextureCornerOrientation {
   const positions = plane.getVerticesData(BABYLON.VertexBuffer.PositionKind);
   const uvs = plane.getVerticesData(BABYLON.VertexBuffer.UVKind);
@@ -1467,7 +1500,7 @@ function fixtureLabelAtUv(u: number, v: number): TextureCornerLabel {
   return u < 0.5 ? 'blue' : 'yellow';
 }
 
-function classifyCameraSide(cameraPosition: BABYLON.Vector3, plane: BABYLON.Mesh): 'front' | 'back' | 'edge-on' {
+function classifyCameraSide(cameraPosition: Vector3, plane: Mesh): 'front' | 'back' | 'edge-on' {
   plane.computeWorldMatrix(true);
   const frontNormal = BABYLON.Vector3.TransformNormal(
     new BABYLON.Vector3(0, 0, -1),
