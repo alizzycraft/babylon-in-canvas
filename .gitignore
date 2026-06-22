@@ -7,6 +7,8 @@ pnpm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 /docs/runtime-proof-runs
+/docs/visual-regression-runs
+/integration/**/node_modules
 .codex-dev.log
 .codex-dev.err.log
 .codex-electron.log

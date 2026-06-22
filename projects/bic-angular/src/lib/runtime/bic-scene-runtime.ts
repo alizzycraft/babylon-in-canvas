@@ -10,8 +10,16 @@ import {
   HtmlSurfaceTextureSnapshot,
   createHtmlSurfaceTexturePipeline,
 } from '../core/html-surface-texture-pipeline';
-import { SurfaceProjectionSnapshot, synchronizeSurfaceProjection } from '../core/surface-projection';
-import { SurfaceState } from '../core/surface-types';
+import {
+  composePlanarSurfaces,
+} from '../core/surface-composition';
+import {
+  SurfaceBounds,
+  SurfaceProjectionSnapshot,
+  projectSurfaceBounds,
+  synchronizeSurfaceProjection,
+} from '../core/surface-projection';
+import { SurfacePrimitive, SurfaceState } from '../core/surface-types';
 
 export interface BicSceneRuntimeOptions {
   readonly engineOptions?: BABYLON.WebGPUEngineOptions;
@@ -33,9 +41,21 @@ export type BicSceneRuntimeStatus =
 
 export interface BicSurfaceRuntimeSnapshot {
   readonly id: string;
+  readonly state: SurfaceState;
   readonly texture: HtmlSurfaceTextureSnapshot;
   readonly projection: SurfaceProjectionSnapshot | null;
   readonly effects: BicSpatialEffectValues;
+  readonly composition: BicSurfaceCompositionSnapshot;
+}
+
+export interface BicSurfaceCompositionSnapshot {
+  readonly primitive: SurfacePrimitive['kind'];
+  readonly interaction: 'interactive' | 'visual-only' | 'disabled';
+  readonly inViewport: boolean;
+  readonly fullyOccluded: boolean;
+  readonly occludedBy: string | null;
+  readonly stackingOrder: number;
+  readonly cameraDistance: number;
 }
 
 export interface BicDisplayMetricsSnapshot {
@@ -66,14 +86,16 @@ interface SceneResources {
 
 interface SurfaceResources {
   readonly host: HTMLElement;
-  readonly plane: BABYLON.Mesh;
-  readonly material: BABYLON.StandardMaterial;
+  readonly mesh: BABYLON.Mesh;
+  readonly renderMeshes: readonly BABYLON.Mesh[];
+  readonly material: BABYLON.Material;
   readonly pipeline: HtmlSurfaceTexturePipeline;
   readonly effects: BicSurfaceEffects;
   stopPipelineListener: () => void;
   state: SurfaceState;
   projection: SurfaceProjectionSnapshot | null;
   effectValues: BicSpatialEffectValues;
+  composition: BicSurfaceCompositionSnapshot;
 }
 
 @Injectable()
@@ -154,13 +176,31 @@ export class BicSceneRuntime {
       return;
     }
 
+    if (surfacePrimitiveKey(surface.state.primitive) !== surfacePrimitiveKey(state.primitive)) {
+      const host = surface.host;
+      this.unregister(id);
+      this.createSurface({ host, state });
+      return;
+    }
+
     surface.state = state;
-    applySurfaceState(surface.plane, state);
+    applySurfaceState(surface.mesh, state);
     void surface.pipeline.requestUpdate('surface-state');
   }
 
   refreshDisplayMetrics(): void {
     this.resources?.refreshDisplayMetrics();
+  }
+
+  getSurfaceScreenBounds(id: string): SurfaceBounds | null {
+    const resources = this.resources;
+    const surface = this.surfaces.get(id);
+
+    if (!resources || !surface) {
+      return null;
+    }
+
+    return projectSurfaceBounds(surface.mesh, resources.scene, resources.canvas);
   }
 
   simulateDeviceLossForTesting(): void {
@@ -190,16 +230,10 @@ export class BicSceneRuntime {
   private createSurface(registration: BicSurfaceRegistration): void {
     const resources = this.requireResources();
     const { state, host } = registration;
-    const plane = BABYLON.MeshBuilder.CreatePlane(state.id, { size: 1 }, resources.scene);
-    const material = new BABYLON.StandardMaterial(`${state.id}-material`, resources.scene);
-
-    material.diffuseColor = BABYLON.Color3.Black();
-    material.emissiveColor = BABYLON.Color3.White();
-    material.specularColor = BABYLON.Color3.Black();
-    material.backFaceCulling = false;
-    material.disableLighting = true;
-    plane.material = material;
-    applySurfaceState(plane, state);
+    const primitive = normalizeSurfacePrimitive(state.primitive);
+    const surfaceMesh = createSurfaceMesh(state.id, primitive, resources.scene);
+    const { mesh, renderMeshes } = surfaceMesh;
+    applySurfaceState(mesh, state);
 
     const pipeline = createHtmlSurfaceTexturePipeline({
       engine: resources.engine,
@@ -208,12 +242,29 @@ export class BicSceneRuntime {
       source: host,
       deviceRecoveryCount: this.deviceRecoveryCount,
     });
-    material.emissiveTexture = pipeline.babylonTexture;
+    const material = createSurfaceMaterial(
+      state.id,
+      pipeline.babylonTexture,
+      primitive,
+      resources.scene,
+    );
 
-    const effects = new BicSurfaceEffects(resources.scene, plane, host, state.id);
+    for (const renderMesh of renderMeshes) {
+      renderMesh.material = material;
+    }
+
+    const effects = new BicSurfaceEffects(
+      resources.scene,
+      mesh,
+      renderMeshes,
+      host,
+      state.id,
+      primitive.kind === 'plane',
+    );
     const surface: SurfaceResources = {
       host,
-      plane,
+      mesh,
+      renderMeshes,
       material,
       pipeline,
       effects,
@@ -221,6 +272,15 @@ export class BicSceneRuntime {
       state,
       projection: null,
       effectValues: effects.update(),
+      composition: {
+        primitive: primitive.kind,
+        interaction: primitive.kind === 'plane' ? 'interactive' : 'visual-only',
+        inViewport: primitive.kind === 'plane',
+        fullyOccluded: false,
+        occludedBy: null,
+        stackingOrder: 0,
+        cameraDistance: 0,
+      },
     };
     const stopPipelineListener = pipeline.onSnapshot(() => {
       const snapshot = pipeline.snapshot();
@@ -242,7 +302,7 @@ export class BicSceneRuntime {
     this.surfaces.set(state.id, surface);
 
     if (this.surfaces.size === 1) {
-      resources.camera.setTarget(plane.position);
+      resources.camera.setTarget(mesh.position);
     }
 
     void pipeline.requestUpdate('manual');
@@ -272,25 +332,35 @@ export class BicSceneRuntime {
 
     for (const surface of this.surfaces.values()) {
       surface.effectValues = surface.effects.update();
+      const primitive = normalizeSurfacePrimitive(surface.state.primitive);
 
-      try {
-        surface.projection = synchronizeSurfaceProjection(
-          resources.adapter,
-          resources.surfaceCanvas,
-          surface.host,
-          surface.plane,
-          resources.scene,
-        );
-        surface.host.dataset['bicProjectionReady'] = 'true';
-        surface.host.dataset['bicProjectionError'] =
-          String(surface.projection.maximumAlignmentError);
-        surface.host.dataset['bicProjectionStrategy'] = surface.projection.strategy;
-      } catch (error) {
-        if (!(error instanceof DOMException && error.name === 'InvalidStateError')) {
-          throw error;
+      if (primitive.kind === 'plane') {
+        try {
+          surface.projection = synchronizeSurfaceProjection(
+            resources.adapter,
+            resources.surfaceCanvas,
+            surface.host,
+            surface.mesh,
+            resources.scene,
+          );
+          surface.host.dataset['bicProjectionReady'] = 'true';
+          surface.host.dataset['bicProjectionError'] =
+            String(surface.projection.maximumAlignmentError);
+          surface.host.dataset['bicProjectionStrategy'] = surface.projection.strategy;
+        } catch (error) {
+          if (!(error instanceof DOMException && error.name === 'InvalidStateError')) {
+            throw error;
+          }
         }
+      } else {
+        surface.projection = null;
+        surface.host.dataset['bicProjectionReady'] = 'false';
+        surface.host.dataset['bicProjectionError'] = '';
+        surface.host.dataset['bicProjectionStrategy'] = 'visual-only';
       }
     }
+
+    this.applySurfaceComposition(resources);
 
     if (resources.scene.getFrameId() % 15 === 0) {
       this.publishSnapshots();
@@ -300,10 +370,71 @@ export class BicSceneRuntime {
   private publishSnapshots(): void {
     this.snapshots.set([...this.surfaces.values()].map((surface) => ({
       id: surface.state.id,
+      state: surface.state,
       texture: surface.pipeline.snapshot(),
       projection: surface.projection,
       effects: surface.effectValues,
+      composition: surface.composition,
     })));
+  }
+
+  private applySurfaceComposition(resources: SceneResources): void {
+    const canvasBounds = resources.canvas.getBoundingClientRect();
+    const viewport = {
+      left: canvasBounds.left,
+      top: canvasBounds.top,
+      right: canvasBounds.right,
+      bottom: canvasBounds.bottom,
+      width: canvasBounds.width,
+      height: canvasBounds.height,
+    };
+    const planarCandidates = [...this.surfaces.values()]
+      .filter((surface) => surface.projection !== null)
+      .map((surface) => ({
+        id: surface.state.id,
+        bounds: surface.projection!.projectedBounds,
+        cameraDistance: BABYLON.Vector3.Distance(
+          resources.camera.globalPosition,
+          surface.mesh.getAbsolutePosition(),
+        ),
+        interactive: (surface.state.interaction ?? 'auto') === 'auto',
+        occlusionEnabled: (surface.state.occlusion ?? 'auto') === 'auto',
+      }));
+    const composition = new Map(
+      composePlanarSurfaces(planarCandidates, viewport)
+        .map((result) => [result.id, result]),
+    );
+
+    for (const surface of this.surfaces.values()) {
+      const primitive = normalizeSurfacePrimitive(surface.state.primitive);
+      const result = composition.get(surface.state.id);
+      const cameraDistance = BABYLON.Vector3.Distance(
+        resources.camera.globalPosition,
+        surface.mesh.getAbsolutePosition(),
+      );
+      const requestedInteraction = surface.state.interaction ?? 'auto';
+      const interaction = primitive.kind !== 'plane'
+        ? 'visual-only'
+        : requestedInteraction === 'none'
+          ? 'disabled'
+          : 'interactive';
+      const interactive =
+        interaction === 'interactive' &&
+        result?.inViewport === true &&
+        result.fullyOccluded === false;
+      const stackingOrder = result?.stackingOrder ?? -1;
+
+      surface.composition = {
+        primitive: primitive.kind,
+        interaction,
+        inViewport: result?.inViewport ?? false,
+        fullyOccluded: result?.fullyOccluded ?? false,
+        occludedBy: result?.occludedBy ?? null,
+        stackingOrder,
+        cameraDistance,
+      };
+      applyDomComposition(surface.host, surface.composition, interactive);
+    }
   }
 
   private handleDisplayMetricsChange(
@@ -471,17 +602,139 @@ function createCamera(
   return camera;
 }
 
-function applySurfaceState(plane: BABYLON.Mesh, state: SurfaceState): void {
-  plane.position.set(state.position.x, state.position.y, state.position.z);
-  plane.rotation.set(state.rotation.x, state.rotation.y, state.rotation.z);
-  plane.scaling.set(state.size.width / 240, state.size.height / 240, 1);
+function applySurfaceState(mesh: BABYLON.Mesh, state: SurfaceState): void {
+  mesh.position.set(state.position.x, state.position.y, state.position.z);
+  mesh.rotation.set(state.rotation.x, state.rotation.y, state.rotation.z);
+  mesh.scaling.set(state.size.width / 240, state.size.height / 240, 1);
 }
 
 function disposeSurfaceResources(surface: SurfaceResources): void {
   surface.effects.dispose();
   surface.pipeline.dispose();
   surface.material.dispose();
-  surface.plane.dispose();
+  surface.mesh.dispose();
+}
+
+interface CreatedSurfaceMesh {
+  readonly mesh: BABYLON.Mesh;
+  readonly renderMeshes: readonly BABYLON.Mesh[];
+}
+
+function createSurfaceMesh(
+  id: string,
+  primitive: SurfacePrimitive,
+  scene: BABYLON.Scene,
+): CreatedSurfaceMesh {
+  if (primitive.kind === 'plane') {
+    const plane = BABYLON.MeshBuilder.CreatePlane(id, { size: 1 }, scene);
+    return { mesh: plane, renderMeshes: [plane] };
+  }
+
+  const arc = clamp(primitive.arc, 0.05, Math.PI * 1.75);
+  const tessellation = Math.round(clamp(primitive.tessellation ?? 32, 8, 128));
+  const radius = 1 / arc;
+  const positions: number[] = [];
+  const indices: number[] = [];
+  const uvs: number[] = [];
+  const normals: number[] = [];
+
+  for (let column = 0; column <= tessellation; column += 1) {
+    const u = column / tessellation;
+    const angle = (u - 0.5) * arc;
+    const x = Math.sin(angle) * radius;
+    const z = (Math.cos(angle) - 1) * radius;
+
+    positions.push(x, -0.5, z, x, 0.5, z);
+    uvs.push(u, 0, u, 1);
+  }
+
+  for (let column = 0; column < tessellation; column += 1) {
+    const lowerLeft = column * 2;
+    const upperLeft = lowerLeft + 1;
+    const lowerRight = lowerLeft + 2;
+    const upperRight = lowerLeft + 3;
+
+    indices.push(
+      lowerLeft, lowerRight, upperRight,
+      lowerLeft, upperRight, upperLeft,
+    );
+  }
+
+  BABYLON.VertexData.ComputeNormals(positions, indices, normals);
+
+  const mesh = new BABYLON.Mesh(id, scene);
+  const vertexData = new BABYLON.VertexData();
+
+  vertexData.positions = positions;
+  vertexData.indices = indices;
+  vertexData.normals = normals;
+  vertexData.uvs = uvs;
+  vertexData.applyToMesh(mesh);
+
+  return { mesh, renderMeshes: [mesh] };
+}
+
+function createSurfaceMaterial(
+  id: string,
+  texture: BABYLON.Texture,
+  primitive: SurfacePrimitive,
+  scene: BABYLON.Scene,
+): BABYLON.Material {
+  const material = new BABYLON.StandardMaterial(`${id}-material`, scene);
+
+  material.diffuseColor = BABYLON.Color3.Black();
+  // StandardMaterial's back/front lighting path saturates a bent unlit mesh
+  // when a white emissive color is combined with the copied DOM texture.
+  // Planes retain the established value; curved primitives use the texture as
+  // the emissive contribution without adding a white base.
+  material.emissiveColor = primitive.kind === 'plane'
+    ? BABYLON.Color3.White()
+    : BABYLON.Color3.Black();
+  material.specularColor = BABYLON.Color3.Black();
+  material.backFaceCulling = false;
+  material.disableLighting = true;
+  material.emissiveTexture = texture;
+  return material;
+}
+
+function normalizeSurfacePrimitive(primitive: SurfacePrimitive | undefined): SurfacePrimitive {
+  return primitive ?? { kind: 'plane' };
+}
+
+function surfacePrimitiveKey(primitive: SurfacePrimitive | undefined): string {
+  const normalized = normalizeSurfacePrimitive(primitive);
+  return normalized.kind === 'plane'
+    ? 'plane'
+    : `cylinder:${normalized.arc}:${normalized.tessellation ?? 32}`;
+}
+
+function applyDomComposition(
+  host: HTMLElement,
+  composition: BicSurfaceCompositionSnapshot,
+  interactive: boolean,
+): void {
+  host.style.zIndex = String(100 + Math.max(composition.stackingOrder, 0));
+  host.style.pointerEvents = interactive ? 'auto' : 'none';
+  const inert = !interactive;
+  const ariaHidden = String(composition.interaction === 'visual-only');
+
+  if (host.inert !== inert) {
+    host.inert = inert;
+  }
+
+  if (host.getAttribute('aria-hidden') !== ariaHidden) {
+    host.setAttribute('aria-hidden', ariaHidden);
+  }
+  host.dataset['bicInteraction'] = composition.interaction;
+  host.dataset['bicInViewport'] = String(composition.inViewport);
+  host.dataset['bicFullyOccluded'] = String(composition.fullyOccluded);
+  host.dataset['bicOccludedBy'] = composition.occludedBy ?? '';
+  host.dataset['bicStackingOrder'] = String(composition.stackingOrder);
+  host.dataset['bicCameraDistance'] = String(composition.cameraDistance);
+}
+
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.min(Math.max(value, minimum), maximum);
 }
 
 interface DisplayMetricsListener {

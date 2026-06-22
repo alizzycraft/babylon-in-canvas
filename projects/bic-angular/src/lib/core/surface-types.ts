@@ -10,6 +10,17 @@ export interface SurfaceSize {
   readonly height: number;
 }
 
+export type SurfacePrimitive =
+  | { readonly kind: 'plane' }
+  | {
+      readonly kind: 'cylinder';
+      readonly arc: number;
+      readonly tessellation?: number;
+    };
+
+export type SurfaceInteractionMode = 'auto' | 'none';
+export type SurfaceOcclusionMode = 'auto' | 'none';
+
 export interface SurfaceState {
   readonly id: string;
   readonly position: Vec3;
@@ -17,6 +28,9 @@ export interface SurfaceState {
   readonly size: SurfaceSize;
   readonly focused: boolean;
   readonly revision: number;
+  readonly primitive?: SurfacePrimitive;
+  readonly interaction?: SurfaceInteractionMode;
+  readonly occlusion?: SurfaceOcclusionMode;
 }
 
 export interface SurfaceViewModel {

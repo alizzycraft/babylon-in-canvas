@@ -51,6 +51,20 @@ import { RuntimeProofPanelComponent } from './discovery/runtime-proof-panel.comp
           <span>DOM → WebGPU → Babylon</span>
         </aside>
       </bic-surface>
+
+      <bic-surface
+        class="demo-curved-surface"
+        id="curved-preview"
+        [position]="curvedPosition"
+        [rotation]="curvedRotation"
+        [size]="curvedSize"
+        [primitive]="curvedPrimitive"
+      >
+        <aside class="curved-card">
+          <strong>Curved primitive</strong>
+          <span>Visual-only DOM texture</span>
+        </aside>
+      </bic-surface>
     </bic-scene>
 
     @if (showRuntimeProofPanel) {
@@ -75,6 +89,14 @@ export class AppComponent {
   readonly statusPosition = { x: 1.55, y: 1.05, z: 3.15 };
   readonly statusRotation = { x: 0, y: -0.16, z: 0 };
   readonly statusSize = { width: 260, height: 120 };
+  readonly curvedPosition = { x: -1.55, y: 0.95, z: 3.05 };
+  readonly curvedRotation = { x: 0, y: 0.12, z: 0 };
+  readonly curvedSize = { width: 300, height: 130 };
+  readonly curvedPrimitive = {
+    kind: 'cylinder' as const,
+    arc: 0.9,
+    tessellation: 36,
+  };
 
   setFocused(focused: boolean): void {
     this.surface.update((state) => setSurfaceFocus(state, focused));

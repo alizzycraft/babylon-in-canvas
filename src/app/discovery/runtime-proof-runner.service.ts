@@ -78,6 +78,7 @@ function createRuntimeProofs(context: RuntimeProofContext): readonly RuntimeProo
   return [
     { name: 'runtime-baseline', run: () => runRuntimeBaselineProof() },
     { name: 'electron-runtime', run: () => runElectronRuntimeProof() },
+    { name: 'electron-security', run: () => runElectronSecurityProof() },
     { name: 'babylon-webgpu-scene', run: () => runBabylonWebGpuSceneProof(context.babylonCanvas) },
     { name: 'html-in-canvas-capability-audit', run: () => runHtmlInCanvasCapabilityAudit(context.htmlCanvas) },
     { name: 'copy-to-texture', run: () => runCopyToTextureProof(context.htmlCanvas, context.copySurface) },
@@ -90,6 +91,9 @@ function createRuntimeProofs(context: RuntimeProofContext): readonly RuntimeProo
     { name: 'display-metrics-resize', run: () => runDisplayMetricsResizeProof(context.sceneRuntime) },
     { name: 'device-pixel-ratio-change', run: () => runDevicePixelRatioChangeProof() },
     { name: 'webgpu-device-recovery', run: () => runWebGpuDeviceRecoveryProof(context.sceneRuntime) },
+    { name: 'surface-composition-policy', run: () => runSurfaceCompositionPolicyProof(context.sceneRuntime) },
+    { name: 'curved-primitive', run: () => runCurvedPrimitiveProof(context.sceneRuntime) },
+    { name: 'visual-regression', run: () => runVisualRegressionProof(context.sceneRuntime) },
     { name: 'mvp-library-contract', run: () => runMvpLibraryContractProof() },
   ];
 }
@@ -136,6 +140,55 @@ async function runElectronRuntimeProof(): Promise<RuntimeProofResult> {
   };
 
   return result('electron-runtime', errors.length === 0 ? 'pass' : 'blocked', details, errors);
+}
+
+async function runElectronSecurityProof(): Promise<RuntimeProofResult> {
+  const getSecurityState = window.bicRuntimeProofs?.getSecurityState;
+
+  if (!getSecurityState) {
+    return result('electron-security', 'blocked', {}, [
+      'Electron security diagnostics are unavailable.',
+    ]);
+  }
+
+  const security = await getSecurityState();
+  const errors: string[] = [];
+  const requiredCspDirectives = [
+    "default-src 'self'",
+    "object-src 'none'",
+    "frame-src 'none'",
+    "script-src 'self'",
+  ];
+
+  if (!security.contextIsolation || security.nodeIntegration || !security.sandbox) {
+    errors.push('Renderer isolation, Node integration, or sandbox settings are insecure.');
+  }
+
+  if (!security.navigationLocked || !security.permissionsDeniedByDefault) {
+    errors.push('Navigation and permission boundaries are not locked down.');
+  }
+
+  if (security.packaged && security.devTools) {
+    errors.push('DevTools remain enabled in the packaged renderer.');
+  }
+
+  if (requiredCspDirectives.some((directive) =>
+    !security.contentSecurityPolicy.includes(directive)
+  )) {
+    errors.push('The renderer Content Security Policy is missing required directives.');
+  }
+
+  if (security.packaged && security.contentSecurityPolicy.includes("'unsafe-eval'")) {
+    errors.push('The packaged renderer CSP permits unsafe evaluation.');
+  }
+
+  return result('electron-security', errors.length === 0 ? 'pass' : 'fail', {
+    ...security,
+    experimentalFeaturesException:
+      security.experimentalFeatures
+        ? 'Required for the Chromium HTML-in-Canvas capability.'
+        : null,
+  }, errors);
 }
 
 async function runBabylonWebGpuSceneProof(canvas: HTMLCanvasElement): Promise<RuntimeProofResult> {
@@ -819,6 +872,273 @@ async function runDevicePixelRatioChangeProof(): Promise<RuntimeProofResult> {
   }, errors);
 }
 
+async function runSurfaceCompositionPolicyProof(
+  runtime: BicSceneRuntime | undefined,
+): Promise<RuntimeProofResult> {
+  if (!runtime) {
+    return result('surface-composition-policy', 'blocked', {}, [
+      'The packaged BicSceneRuntime was not provided to the proof harness.',
+    ]);
+  }
+
+  const errors: string[] = [];
+  const primary = runtime.snapshots().find((snapshot) => snapshot.id === 'primary-panel');
+  const front = runtime.snapshots().find((snapshot) => snapshot.id === 'runtime-status');
+  const primaryHost = document.querySelector<HTMLElement>('[data-bic-surface="primary-panel"]');
+  const frontHost = document.querySelector<HTMLElement>('[data-bic-surface="runtime-status"]');
+
+  if (!primary || !front || !primaryHost || !frontHost) {
+    return result('surface-composition-policy', 'blocked', {}, [
+      'The primary and status planar surfaces are required for composition testing.',
+    ]);
+  }
+
+  const primaryState = primary.state;
+  const frontState = front.state;
+  const overlappingFrontState = {
+    ...frontState,
+    position: {
+      ...primaryState.position,
+      z: primaryState.position.z - 0.3,
+    },
+    rotation: primaryState.rotation,
+    size: {
+      width: primaryState.size.width + 120,
+      height: primaryState.size.height + 120,
+    },
+    primitive: { kind: 'plane' } as const,
+    interaction: 'auto' as const,
+    occlusion: 'auto' as const,
+    revision: frontState.revision + 1,
+  };
+  let occluded = false;
+  let restored = false;
+  let overlapDetails: unknown = null;
+
+  try {
+    runtime.update(frontState.id, overlappingFrontState);
+    occluded = await waitForCondition(() =>
+      primaryHost.dataset['bicFullyOccluded'] === 'true' &&
+      primaryHost.dataset['bicOccludedBy'] === frontState.id &&
+      primaryHost.style.pointerEvents === 'none' &&
+      primaryHost.inert &&
+      Number(frontHost.dataset['bicStackingOrder'] ?? -1) >
+        Number(primaryHost.dataset['bicStackingOrder'] ?? -1),
+    );
+    overlapDetails = {
+      primary: readCompositionDetails(primaryHost),
+      front: readCompositionDetails(frontHost),
+    };
+  } finally {
+    runtime.update(frontState.id, frontState);
+    restored = await waitForCondition(() =>
+      primaryHost.dataset['bicFullyOccluded'] === 'false' &&
+      primaryHost.style.pointerEvents === 'auto' &&
+      !primaryHost.inert,
+    );
+  }
+
+  if (!occluded) {
+    errors.push('A nearer fully covering plane did not disable the rear DOM interaction surface.');
+  }
+
+  if (!restored) {
+    errors.push('The rear DOM interaction surface did not recover after overlap was removed.');
+  }
+
+  return result('surface-composition-policy', errors.length === 0 ? 'pass' : 'fail', {
+    overlapDetails,
+    finalPrimary: readCompositionDetails(primaryHost),
+    finalFront: readCompositionDetails(frontHost),
+    occluded,
+    restored,
+  }, errors);
+}
+
+async function runCurvedPrimitiveProof(
+  runtime: BicSceneRuntime | undefined,
+): Promise<RuntimeProofResult> {
+  if (!runtime) {
+    return result('curved-primitive', 'blocked', {}, [
+      'The packaged BicSceneRuntime was not provided to the proof harness.',
+    ]);
+  }
+
+  const errors: string[] = [];
+  const snapshot = runtime.snapshots().find((surface) => surface.id === 'curved-preview');
+  const host = document.querySelector<HTMLElement>('[data-bic-surface="curved-preview"]');
+
+  if (!snapshot || !host) {
+    return result('curved-primitive', 'blocked', {}, [
+      'The curved visual-only demo surface is unavailable.',
+    ]);
+  }
+
+  const visualOnly =
+    snapshot.composition.primitive === 'cylinder' &&
+    snapshot.composition.interaction === 'visual-only' &&
+    snapshot.projection === null &&
+    host.dataset['bicProjectionStrategy'] === 'visual-only' &&
+    host.style.pointerEvents === 'none' &&
+    host.inert &&
+    host.getAttribute('aria-hidden') === 'true';
+  const textureHealthy =
+    snapshot.texture.updateCount > 0 &&
+    snapshot.texture.lastError === null &&
+    Boolean(host.dataset['bicTextureSize']);
+
+  if (!visualOnly) {
+    errors.push('The curved surface did not enforce the visual-only interaction contract.');
+  }
+
+  if (!textureHealthy) {
+    errors.push('The curved surface did not receive a healthy DOM-backed WebGPU texture.');
+  }
+
+  return result('curved-primitive', errors.length > 0 ? 'fail' : 'pass', {
+    primitive: snapshot.state.primitive,
+    composition: snapshot.composition,
+    projection: snapshot.projection,
+    texture: snapshot.texture,
+    host: readCompositionDetails(host),
+    visualOnly,
+    textureHealthy,
+    visualAcceptance: 'accepted',
+    rendering: 'single curved mesh with continuous UV coordinates',
+  }, errors);
+}
+
+async function runVisualRegressionProof(
+  runtime: BicSceneRuntime | undefined,
+): Promise<RuntimeProofResult> {
+  const captureVisual = window.bicRuntimeProofs?.captureVisual;
+
+  if (!runtime || !captureVisual) {
+    return result('visual-regression', 'blocked', {}, [
+      'Electron visual capture is unavailable.',
+    ]);
+  }
+
+  const bounds = runtime.getSurfaceScreenBounds('curved-preview');
+
+  if (!bounds) {
+    return result('visual-regression', 'blocked', {}, [
+      'The curved surface bounds are unavailable.',
+    ]);
+  }
+
+  const margin = 12;
+  const capture = await captureVisual({
+    label: 'curved-primitive',
+    clip: {
+      x: bounds.left - margin,
+      y: bounds.top - margin,
+      width: bounds.width + margin * 2,
+      height: bounds.height + margin * 2,
+    },
+  });
+  const metrics = await analyzeVisualCapture(capture.dataUrl);
+  const errors: string[] = [];
+
+  if (metrics.contentRatio < 0.12) {
+    errors.push('The curved surface capture contains too little rendered content.');
+  }
+
+  if (metrics.nearWhiteRatio > 0.55) {
+    errors.push('The curved surface regressed to a saturated white texture.');
+  }
+
+  if (metrics.tealRatio < 0.01 || metrics.luminanceStandardDeviation < 10) {
+    errors.push('The curved surface capture lacks the expected DOM texture color and contrast.');
+  }
+
+  return result('visual-regression', errors.length === 0 ? 'pass' : 'fail', {
+    bounds,
+    artifact: capture.pngPath,
+    imageSize: {
+      width: capture.width,
+      height: capture.height,
+    },
+    metrics,
+    thresholds: {
+      minimumContentRatio: 0.12,
+      maximumNearWhiteRatio: 0.55,
+      minimumTealRatio: 0.01,
+      minimumLuminanceStandardDeviation: 10,
+    },
+  }, errors);
+}
+
+async function analyzeVisualCapture(dataUrl: string): Promise<{
+  readonly contentRatio: number;
+  readonly nearWhiteRatio: number;
+  readonly tealRatio: number;
+  readonly luminanceStandardDeviation: number;
+}> {
+  const image = new Image();
+  const loaded = new Promise<void>((resolve, reject) => {
+    image.addEventListener('load', () => resolve(), { once: true });
+    image.addEventListener('error', () => reject(new Error(
+      'Could not decode the visual-regression capture.',
+    )), { once: true });
+  });
+  image.src = dataUrl;
+  await loaded;
+  const canvas = document.createElement('canvas');
+  canvas.width = image.naturalWidth;
+  canvas.height = image.naturalHeight;
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+
+  if (!context) {
+    throw new Error('Could not create a 2D context for visual-regression analysis.');
+  }
+
+  context.drawImage(image, 0, 0);
+
+  const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+  const pixelCount = pixels.length / 4;
+  let content = 0;
+  let nearWhite = 0;
+  let teal = 0;
+  let luminanceTotal = 0;
+  let luminanceSquaredTotal = 0;
+
+  for (let offset = 0; offset < pixels.length; offset += 4) {
+    const red = pixels[offset] ?? 0;
+    const green = pixels[offset + 1] ?? 0;
+    const blue = pixels[offset + 2] ?? 0;
+    const luminance = red * 0.2126 + green * 0.7152 + blue * 0.0722;
+
+    if (luminance > 18) {
+      content += 1;
+    }
+
+    if (red > 235 && green > 235 && blue > 235) {
+      nearWhite += 1;
+    }
+
+    if (green > red * 1.15 && blue > red * 1.1 && green > 55) {
+      teal += 1;
+    }
+
+    luminanceTotal += luminance;
+    luminanceSquaredTotal += luminance * luminance;
+  }
+
+  const averageLuminance = luminanceTotal / pixelCount;
+  const luminanceVariance = Math.max(
+    0,
+    luminanceSquaredTotal / pixelCount - averageLuminance * averageLuminance,
+  );
+
+  return {
+    contentRatio: content / pixelCount,
+    nearWhiteRatio: nearWhite / pixelCount,
+    tealRatio: teal / pixelCount,
+    luminanceStandardDeviation: Math.sqrt(luminanceVariance),
+  };
+}
+
 async function runSignalSurfaceUpdatesProof(): Promise<RuntimeProofResult> {
   const errors: string[] = [];
   const host = await waitForProjectedSurface();
@@ -889,6 +1209,7 @@ async function runMvpLibraryContractProof(): Promise<RuntimeProofResult> {
 
   const surfaceDetails = surfaces.map((surface) => ({
     id: surface.dataset['bicSurface'] ?? null,
+    primitive: surface.dataset['bicPrimitive'] ?? 'plane',
     directCanvasChild: surface.parentElement === surfaceCanvas,
     projectionReady: surface.dataset['bicProjectionReady'] === 'true',
     projectionError: Number(surface.dataset['bicProjectionError'] ?? Number.NaN),
@@ -904,11 +1225,16 @@ async function runMvpLibraryContractProof(): Promise<RuntimeProofResult> {
   }
 
   for (const surface of surfaceDetails) {
-    if (!surface.directCanvasChild || !surface.projectionReady) {
-      errors.push(`Surface ${surface.id ?? 'unknown'} is not a ready direct canvas child.`);
+    if (!surface.directCanvasChild) {
+      errors.push(`Surface ${surface.id ?? 'unknown'} is not a direct canvas child.`);
     }
 
-    if (!Number.isFinite(surface.projectionError) || surface.projectionError > 2) {
+    if (
+      surface.primitive === 'plane' &&
+      (!surface.projectionReady ||
+        !Number.isFinite(surface.projectionError) ||
+        surface.projectionError > 2)
+    ) {
       errors.push(`Surface ${surface.id ?? 'unknown'} projection is outside tolerance.`);
     }
 
@@ -930,6 +1256,21 @@ async function runMvpLibraryContractProof(): Promise<RuntimeProofResult> {
     surfaceCount: surfaces.length,
     surfaces: surfaceDetails,
   }, errors);
+}
+
+function readCompositionDetails(host: HTMLElement): Record<string, unknown> {
+  return {
+    primitive: host.dataset['bicPrimitive'] ?? null,
+    interaction: host.dataset['bicInteraction'] ?? null,
+    inViewport: host.dataset['bicInViewport'] ?? null,
+    fullyOccluded: host.dataset['bicFullyOccluded'] ?? null,
+    occludedBy: host.dataset['bicOccludedBy'] ?? null,
+    stackingOrder: Number(host.dataset['bicStackingOrder'] ?? Number.NaN),
+    cameraDistance: Number(host.dataset['bicCameraDistance'] ?? Number.NaN),
+    pointerEvents: host.style.pointerEvents,
+    inert: host.inert,
+    ariaHidden: host.getAttribute('aria-hidden'),
+  };
 }
 
 async function waitForTextureState(
@@ -1173,10 +1514,6 @@ interface CopyOnPaintResult {
   readonly error?: string;
 }
 
-type PaintableCanvas = HTMLCanvasElement & {
-  onpaint?: ((event: Event) => void) | null;
-};
-
 function copyElementOnNextPaint(
   canvas: HTMLCanvasElement,
   adapter: ReturnType<typeof createHtmlInCanvasAdapter>,
@@ -1185,9 +1522,8 @@ function copyElementOnNextPaint(
   size: SurfaceTextureSize,
 ): Promise<CopyOnPaintResult> {
   return new Promise<CopyOnPaintResult>((resolve) => {
-    const paintableCanvas = canvas as PaintableCanvas;
-    const previousOnPaint = paintableCanvas.onpaint;
     let resolved = false;
+    let stopPaint: () => void = () => undefined;
 
     const resolveOnce = (result: CopyOnPaintResult) => {
       if (resolved) {
@@ -1195,7 +1531,7 @@ function copyElementOnNextPaint(
       }
 
       resolved = true;
-      paintableCanvas.onpaint = previousOnPaint ?? null;
+      stopPaint();
       window.clearTimeout(timeout);
       resolve(result);
     };
@@ -1209,9 +1545,7 @@ function copyElementOnNextPaint(
       });
     }, 2_000);
 
-    paintableCanvas.onpaint = (event: Event) => {
-      previousOnPaint?.call(canvas, event);
-
+    stopPaint = adapter.onPaint(() => {
       try {
         const copySignature = adapter.copyElementToTexture(source, texture, size);
         resolveOnce({
@@ -1227,7 +1561,7 @@ function copyElementOnNextPaint(
           error: toErrorMessage(error),
         });
       }
-    };
+    });
 
     adapter.requestPaint();
   });

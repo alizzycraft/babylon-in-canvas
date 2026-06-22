@@ -42,6 +42,10 @@ bic-surface.demo-status-surface {
   @include bic.glow($radius: 14px, $intensity: 0.35);
 }
 
+.demo-curved-surface {
+  @include bic.glow($radius: 16px, $intensity: 0.4);
+}
+
 .runtime-card {
   display: grid;
   align-content: center;
@@ -62,6 +66,28 @@ bic-surface.demo-status-surface {
 
 .runtime-card span {
   color: rgba(245, 248, 255, 0.72);
+  font-size: 12px;
+}
+
+.curved-card {
+  display: grid;
+  place-content: center;
+  gap: 8px;
+  width: 100%;
+  height: 100%;
+  padding: 18px;
+  border: 1px solid rgba(125, 230, 214, 0.34);
+  background: linear-gradient(135deg, rgba(15, 57, 62, 0.98), rgba(8, 25, 36, 0.98));
+  color: #e8fffb;
+  text-align: center;
+}
+
+.curved-card strong {
+  color: #8ff3df;
+}
+
+.curved-card span {
+  color: rgba(232, 255, 251, 0.7);
   font-size: 12px;
 }
 

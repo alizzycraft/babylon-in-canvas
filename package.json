@@ -17,9 +17,10 @@
     "dev:renderer": "ng serve --host 127.0.0.1 --port 4200",
     "build": "pnpm build:library && pnpm build:renderer && pnpm build:electron",
     "build:library": "ng build bic-angular && node scripts/verify-library-package.mjs",
-    "build:renderer": "ng build",
+    "build:renderer": "ng build --configuration production --base-href ./",
     "build:electron": "tsc -p tsconfig.electron.json",
     "test:library": "ng test bic-angular --watch=false",
+    "test:consumer": "pnpm build:library && node scripts/verify-consumer-fixture.mjs",
     "typecheck": "tsc -p projects/bic-angular/tsconfig.lib.json --noEmit && tsc -p tsconfig.app.json --noEmit && tsc -p tsconfig.electron.json --noEmit"
   },
   "dependencies": {

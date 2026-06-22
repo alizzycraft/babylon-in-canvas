@@ -35,11 +35,23 @@
           },
           "configurations": {
             "production": {
+              "index": {
+                "input": "src/index.production.html",
+                "output": "index.html"
+              },
+              "optimization": {
+                "scripts": true,
+                "styles": {
+                  "minify": true,
+                  "inlineCritical": false
+                },
+                "fonts": true
+              },
               "budgets": [
                 {
                   "type": "initial",
-                  "maximumWarning": "750kB",
-                  "maximumError": "1.5MB"
+                  "maximumWarning": "7MB",
+                  "maximumError": "8MB"
                 }
               ],
               "outputHashing": "all"

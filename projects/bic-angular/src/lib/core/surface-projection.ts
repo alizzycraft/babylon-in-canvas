@@ -52,7 +52,7 @@ export function synchronizeSurfaceProjection(
 
   applyTransform(source, helperTransform);
 
-  const projectedBounds = projectPlaneBounds(plane, scene, canvas);
+  const projectedBounds = projectSurfaceBounds(plane, scene, canvas);
   let hostBounds = toBounds(source.getBoundingClientRect());
   let maximumAlignmentError = maximumBoundsError(hostBounds, projectedBounds);
   let transform = helperTransform;
@@ -88,17 +88,18 @@ function applyTransform(source: HTMLElement, transform: DOMMatrix): void {
   }
 }
 
-function projectPlaneBounds(
-  plane: BABYLON.Mesh,
+export function projectSurfaceBounds(
+  mesh: BABYLON.Mesh,
   scene: BABYLON.Scene,
   canvas: HTMLCanvasElement,
 ): SurfaceBounds {
-  const boundingBox = plane.getBoundingInfo().boundingBox;
+  mesh.computeWorldMatrix(true);
+  const boundingBox = mesh.getBoundingInfo().boundingBox;
   const viewport = new BABYLON.Viewport(0, 0, canvas.width, canvas.height);
   const projected = boundingBox.vectors.map((corner) =>
     BABYLON.Vector3.Project(
       corner,
-      plane.getWorldMatrix(),
+      mesh.getWorldMatrix(),
       scene.getTransformMatrix(),
       viewport,
     ),

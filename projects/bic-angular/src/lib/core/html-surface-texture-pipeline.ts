@@ -167,6 +167,8 @@ class DefaultHtmlSurfaceTexturePipeline implements HtmlSurfaceTexturePipeline {
         record.target === options.source &&
         (
           record.attributeName === 'style' ||
+          record.attributeName === 'inert' ||
+          record.attributeName === 'aria-hidden' ||
           record.attributeName?.startsWith('data-bic-') === true
         )
       )) {
@@ -283,19 +285,33 @@ class DefaultHtmlSurfaceTexturePipeline implements HtmlSurfaceTexturePipeline {
   private async runUpdateCycle(): Promise<void> {
     try {
       await waitForAnimationFrames(2);
-      const currentSize = readTextureSize(this.options.source);
+      let result: CopyOnPaintResult | null = null;
 
-      if (!sameTextureSize(this.size, currentSize)) {
-        this.recreateTexture(currentSize);
+      for (let sizeAttempt = 0; sizeAttempt < 3; sizeAttempt += 1) {
+        const currentSize = readTextureSize(this.options.source);
+
+        if (!sameTextureSize(this.size, currentSize)) {
+          this.recreateTexture(currentSize);
+        }
+
+        result = await copyElementWithPaintRetry(
+          this.options.canvas,
+          this.adapter,
+          this.options.source,
+          this.gpuTexture,
+          this.size,
+        );
+
+        if (!result.sizeChanged) {
+          break;
+        }
+
+        await waitForAnimationFrames(1);
       }
 
-      const result = await copyElementWithPaintRetry(
-        this.options.canvas,
-        this.adapter,
-        this.options.source,
-        this.gpuTexture,
-        this.size,
-      );
+      if (!result) {
+        throw new Error('HTML surface update completed without a paint result.');
+      }
 
       this.paintObserved = result.paintObserved;
       this.copySignature = result.copySignature;
@@ -348,6 +364,7 @@ interface CopyOnPaintResult {
   readonly copySignature: string | null;
   readonly retryCount: number;
   readonly timedOut: boolean;
+  readonly sizeChanged: boolean;
   readonly error?: string;
 }
 
@@ -364,7 +381,7 @@ async function copyElementWithPaintRetry(
   for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
     lastResult = await copyElementOnNextPaint(canvas, adapter, source, texture, size);
 
-    if (lastResult.copySucceeded || lastResult.paintObserved) {
+    if (lastResult.copySucceeded || lastResult.paintObserved || lastResult.sizeChanged) {
       return {
         ...lastResult,
         retryCount: attempt,
@@ -380,10 +397,12 @@ async function copyElementWithPaintRetry(
       paintObserved: false,
       copySucceeded: false,
       copySignature: null,
+      sizeChanged: false,
       error: 'HTML-in-Canvas paint copy did not run.',
     }),
     retryCount: maximumAttempts - 1,
     timedOut: true,
+    sizeChanged: false,
   };
 }
 
@@ -391,6 +410,7 @@ interface CopyOnPaintAttemptResult {
   readonly paintObserved: boolean;
   readonly copySucceeded: boolean;
   readonly copySignature: string | null;
+  readonly sizeChanged: boolean;
   readonly error?: string;
 }
 
@@ -483,23 +503,39 @@ function copyElementOnNextPaint(
         paintObserved: false,
         copySucceeded: false,
         copySignature: null,
+        sizeChanged: false,
         error: 'Timed out waiting for HTML-in-Canvas paint event before copying to texture.',
       });
     }, 750);
 
     stopPaint = adapter.onPaint(() => {
+      const currentSize = readTextureSize(source);
+
+      if (!sameTextureSize(size, currentSize)) {
+        resolveOnce({
+          paintObserved: true,
+          copySucceeded: false,
+          copySignature: null,
+          sizeChanged: true,
+          error: 'Surface dimensions changed before the HTML-in-Canvas paint copy.',
+        });
+        return;
+      }
+
       try {
         const copySignature = adapter.copyElementToTexture(source, texture, size);
         resolveOnce({
           paintObserved: true,
           copySucceeded: true,
           copySignature,
+          sizeChanged: false,
         });
       } catch (error) {
         resolveOnce({
           paintObserved: true,
           copySucceeded: false,
           copySignature: null,
+          sizeChanged: false,
           error: toErrorMessage(error),
         });
       }

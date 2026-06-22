@@ -30,16 +30,18 @@ export class BicSurfaceEffects {
 
   constructor(
     scene: BABYLON.Scene,
-    private readonly plane: BABYLON.Mesh,
+    private readonly root: BABYLON.Mesh,
+    private readonly renderMeshes: readonly BABYLON.Mesh[],
     private readonly host: HTMLElement,
     id: string,
+    private readonly supportsDepth = true,
   ) {
     this.depthMesh = BABYLON.MeshBuilder.CreateBox(`${id}-depth`, {
       width: 1,
       height: 1,
       depth: 1,
     }, scene);
-    this.depthMesh.parent = plane;
+    this.depthMesh.parent = root;
     this.depthMesh.isPickable = false;
 
     this.depthMaterial = new BABYLON.StandardMaterial(`${id}-depth-material`, scene);
@@ -51,7 +53,9 @@ export class BicSurfaceEffects {
     this.glowLayer = new BABYLON.GlowLayer(`${id}-glow`, scene, {
       blurKernelSize: 18,
     });
-    this.glowLayer.addIncludedOnlyMesh(plane);
+    for (const mesh of renderMeshes) {
+      this.glowLayer.addIncludedOnlyMesh(mesh);
+    }
     this.glowLayer.customEmissiveColorSelector = (_mesh, _subMesh, _material, result) => {
       result.set(0.28, 0.58, 1, 1);
     };
@@ -66,7 +70,7 @@ export class BicSurfaceEffects {
     }
 
     this.lastSignature = signature;
-    this.depthMesh.setEnabled(values.depth > 0);
+    this.depthMesh.setEnabled(this.supportsDepth && values.depth > 0);
     this.depthMesh.scaling.z = Math.max(values.depth, 0.0001);
     this.depthMesh.position.z = getBicDepthMeshPosition(values.depth);
     this.glowLayer.intensity = Math.max(values.glowIntensity, 0);

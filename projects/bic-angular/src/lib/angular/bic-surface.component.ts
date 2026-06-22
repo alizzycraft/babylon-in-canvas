@@ -9,11 +9,19 @@ import {
   input,
 } from '@angular/core';
 import { BicSceneRuntime } from '../runtime/bic-scene-runtime';
-import { SurfaceSize, SurfaceState, Vec3 } from '../core/surface-types';
+import {
+  SurfaceInteractionMode,
+  SurfaceOcclusionMode,
+  SurfacePrimitive,
+  SurfaceSize,
+  SurfaceState,
+  Vec3,
+} from '../core/surface-types';
 
 const defaultPosition: Vec3 = { x: 0, y: 0, z: 2.8 };
 const defaultRotation: Vec3 = { x: 0, y: 0, z: 0 };
 const defaultSize: SurfaceSize = { width: 640, height: 420 };
+const defaultPrimitive: SurfacePrimitive = { kind: 'plane' };
 let nextSurfaceId = 1;
 
 @Component({
@@ -53,6 +61,9 @@ export class BicSurfaceComponent implements AfterViewInit, OnDestroy {
   readonly rotation = input<Vec3>(defaultRotation);
   readonly size = input<SurfaceSize>(defaultSize);
   readonly focused = input(false);
+  readonly primitive = input<SurfacePrimitive>(defaultPrimitive);
+  readonly interaction = input<SurfaceInteractionMode>('auto');
+  readonly occlusion = input<SurfaceOcclusionMode>('auto');
 
   readonly state = computed<SurfaceState>(() => ({
     id: this.id(),
@@ -61,6 +72,9 @@ export class BicSurfaceComponent implements AfterViewInit, OnDestroy {
     size: this.size(),
     focused: this.focused(),
     revision: 0,
+    primitive: this.primitive(),
+    interaction: this.interaction(),
+    occlusion: this.occlusion(),
   }));
   readonly contentTransform = computed(() => `scale(${this.runtime.devicePixelRatio()})`);
 
@@ -79,6 +93,9 @@ export class BicSurfaceComponent implements AfterViewInit, OnDestroy {
       host.style.height = `${Math.ceil(state.size.height * devicePixelRatio)}px`;
       host.dataset['bicSurface'] = state.id;
       host.dataset['bicFocused'] = String(state.focused);
+      host.dataset['bicPrimitive'] = state.primitive?.kind ?? 'plane';
+      host.dataset['bicInteractionMode'] = state.interaction ?? 'auto';
+      host.dataset['bicOcclusionMode'] = state.occlusion ?? 'auto';
       host.dataset['bicDevicePixelRatio'] = String(devicePixelRatio);
       host.classList.toggle('bic-surface--focused', state.focused);
       this.runtime.update(state.id, state);
