@@ -1,6 +1,14 @@
 {
   "name": "@babylon-in-canvas/angular",
-  "version": "0.0.1",
+  "version": "0.1.0",
+  "description": "Angular components for projecting real DOM/CSS surfaces into BabylonJS WebGPU scenes via HTML-in-Canvas browser APIs.",
+  "author": "alizzycraft <solarpunk.lizzy@gmail.com>",
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AliStarr/babylon-in-canvas"
+  },
+  "keywords": ["angular", "babylonjs", "webgpu", "html-in-canvas", "3d", "electron"],
   "peerDependencies": {
     "@angular/common": "^22.0.0",
     "@angular/core": "^22.0.0",

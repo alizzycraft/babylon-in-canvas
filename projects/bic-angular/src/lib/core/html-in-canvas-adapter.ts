@@ -1,4 +1,41 @@
 // Isolates the unstable Chromium HTML-in-Canvas API from the public library API.
+export interface BicPreflightAudit {
+  readonly supported: boolean;
+  readonly details: {
+    readonly webGpu: boolean;
+    readonly layoutSubtree: boolean;
+    readonly paintEvent: boolean;
+    readonly copyPrimitive: boolean;
+    readonly getElementTransform: boolean;
+  };
+}
+
+export function auditPreflightCapabilities(canvas: HTMLCanvasElement): BicPreflightAudit {
+  const webGpu = typeof navigator !== 'undefined' && 'gpu' in navigator;
+  const layoutSubtree = canvas.hasAttribute('layoutsubtree');
+  const paintEvent = 'onpaint' in canvas;
+
+  const hasDrawElementImage = typeof CanvasRenderingContext2D !== 'undefined' && 'drawElementImage' in CanvasRenderingContext2D.prototype;
+  const hasTexElementImage2D = typeof WebGL2RenderingContext !== 'undefined' && 'texElementImage2D' in WebGL2RenderingContext.prototype;
+  const hasCopyElementImageToTexture = typeof GPUQueue !== 'undefined' && 'copyElementImageToTexture' in GPUQueue.prototype;
+  const copyPrimitive = hasDrawElementImage || hasTexElementImage2D || hasCopyElementImageToTexture;
+
+  const getElementTransform = 'getElementTransform' in canvas;
+
+  const supported = webGpu && layoutSubtree && paintEvent && copyPrimitive && getElementTransform;
+
+  return {
+    supported,
+    details: {
+      webGpu,
+      layoutSubtree,
+      paintEvent,
+      copyPrimitive,
+      getElementTransform,
+    },
+  };
+}
+
 export interface HtmlInCanvasCapabilities {
   readonly layoutSubtree: boolean;
   readonly paintEvent: boolean;

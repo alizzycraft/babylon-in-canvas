@@ -1,79 +1,65 @@
-# Babylon in Canvas
+# Babylon-in-Canvas
 
-Angular 22 library and Electron demo for projecting real Angular DOM/CSS
-surfaces into Babylon.js 9.12 WebGPU scenes through HTML-in-Canvas.
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 
-The MVP library package is built as `@babylon-in-canvas/angular`.
+Angular 22 library for projecting real Angular DOM/CSS surfaces into Babylon.js
+9.12 WebGPU scenes through Chromium's HTML-in-Canvas APIs.
 
-## Runtime
+The published package is [`@babylon-in-canvas/angular`](projects/bic-angular/README.md).
 
-This project intentionally starts with Electron, not a browser-only spike. Electron is the starting  host runtime as it allows for Electron specific issues to surface earily, so Electron-specific Chromium flags, WebGPU behavior, DevTools behavior, and packaging constraints.
+## What this repo contains
 
-Pinned core versions:
+| Path | Purpose |
+|---|---|
+| `projects/bic-angular/` | The library (what gets published) |
+| `projects/bic-docs/` | Documentation site (deployed to GitHub Pages) |
+| `src/` | Electron-based dev harness / demo app |
+| `electron/` | Electron main process for the dev harness |
+| `integration/angular-consumer/` | Compile-time fixture that verifies the published package is importable from a fresh Angular project |
 
-* Angular `22.0.1`
-* BabylonJS `9.12.0`
-* Electron `42.4.0`
+The dev harness uses Electron because it's the most straightforward way to
+enable the required experimental Chromium flags locally. The library itself
+has no dependency on Electron — consumers bring their own runtime and apply
+`BIC_CHROMIUM_SWITCHES` however suits their environment.
 
-Angular `22.0.1` requires Node `^22.22.3`, `^24.15.0`, or `>=26.0.0`.
+## Architecture principles
 
-## Architecture Defaults
+- Zoneless Angular only — no `zone.js`
+- `ChangeDetectionStrategy.OnPush` throughout
+- Signals-first state and derived view models
+- HTML-in-Canvas browser APIs sit behind an adapter boundary
+- Clean startup failure with capability audit UI when required APIs are missing
 
-* Zoneless Angular only: no `zone.js` import or dependency.
-* `ChangeDetectionStrategy.OnPush` for Angular components.
-* Signals-first state and derived view models.
-* Domain-scoped reactive state machines.
-* Pure transition/derivation functions inside the modules that own the state.
-* Electron/Chromium runtime feature gates are explicit.
-* HTML-in-Canvas browser signatures sit behind an adapter boundary.
+## Pinned versions
 
-## Library API
+| Package | Version |
+|---|---|
+| Angular | `22.0.1` |
+| BabylonJS | `9.12.0` |
+| Electron (dev harness) | `42.4.0` |
+| Node | `^22.22.3 \| ^24.15.0 \| >=26.0.0` |
 
-```ts
-import {
-  BicSceneComponent,
-  BicSurfaceComponent,
-} from '@babylon-in-canvas/angular';
-```
-
-```html
-<bic-scene>
-  <bic-surface
-    class="settings-surface"
-    [position]="position()"
-    [rotation]="rotation()"
-    [size]="size()"
-  >
-    <app-settings-panel />
-  </bic-surface>
-</bic-scene>
-```
-
-```scss
-@use '@babylon-in-canvas/angular/effects' as bic;
-
-.settings-surface {
-  @include bic.depth(0.08);
-  @include bic.glow($radius: 20px, $intensity: 0.5);
-}
-```
-
-## Commands
+## Dev setup
 
 ```bash
 pnpm install
-pnpm dev
-pnpm build
-pnpm typecheck
-pnpm test:library
+pnpm dev          # starts Angular dev server + Electron
+pnpm build        # library + renderer + electron
+pnpm build:docs   # docs site → dist/docs
+pnpm typecheck    # tsc across all projects
+pnpm test:library # unit tests
 ```
 
-`pnpm dev` starts Angular's dev server, then launches Electron against it.
-`pnpm build` creates the packaged Angular library, verifies its JavaScript,
-declarations and SCSS exports, and builds the renderer and Electron host.
+`pnpm dev` starts Angular's dev server then launches Electron against it.
+`pnpm build` builds the library (with package verification), the renderer,
+and the Electron host.
 
-The implementation status and acceptance evidence are in
-[`docs/mvp-runtime-report.md`](docs/mvp-runtime-report.md).
+## Documentation
 
-The runtime-resilience architecture and destructive recovery evidence are in
-[`docs/runtime-resilience-report.md`](docs/runtime-resilience-report.md).
+- [Library README](projects/bic-angular/README.md) — installation, API reference, usage examples
+- [`docs/mvp-runtime-report.md`](docs/mvp-runtime-report.md) — implementation status and acceptance evidence
+- [`docs/runtime-resilience-report.md`](docs/runtime-resilience-report.md) — device loss recovery architecture
+
+## License
+
+[AGPL-3.0-only](https://www.gnu.org/licenses/agpl-3.0) © alizzycraft

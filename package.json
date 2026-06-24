@@ -5,7 +5,9 @@
   "type": "module",
   "main": "dist/electron/main.js",
   "packageManager": "pnpm@10.24.0",
-  "description": "Angular + BabylonJS + WebGPU surfaces inside Electron using HTML-in-Canvas.",
+  "description": "Angular components for projecting real DOM/CSS surfaces into BabylonJS WebGPU scenes via HTML-in-Canvas browser APIs.",
+  "author": "alizzycraft <solarpunk.lizzy@gmail.com>",
+  "license": "AGPL-3.0-only",
   "engines": {
     "node": "^22.22.3 || ^24.15.0 || >=26.0.0",
     "pnpm": ">=10.0.0"
@@ -19,6 +21,7 @@
     "build:library": "ng build bic-angular && node scripts/verify-library-package.mjs",
     "build:renderer": "ng build --configuration production --base-href ./",
     "build:electron": "tsc -p tsconfig.electron.json",
+    "build:docs": "ng build bic-docs --configuration production --base-href ./",
     "test:library": "ng test bic-angular --watch=false",
     "test:consumer": "pnpm build:library && node scripts/verify-consumer-fixture.mjs",
     "typecheck": "tsc -p projects/bic-angular/tsconfig.lib.json --noEmit && tsc -p tsconfig.app.json --noEmit && tsc -p tsconfig.electron.json --noEmit"

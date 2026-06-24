@@ -44,6 +44,9 @@
     },
     {
       "path": "./projects/bic-angular/tsconfig.spec.json"
+    },
+    {
+      "path": "./projects/bic-docs/tsconfig.app.json"
     }
   ]
 }

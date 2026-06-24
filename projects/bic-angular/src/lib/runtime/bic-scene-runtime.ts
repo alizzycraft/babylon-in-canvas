@@ -27,6 +27,7 @@ import { BicSurfaceEffects, BicSpatialEffectValues } from '../effects/surface-ef
 import {
   HtmlInCanvasCapabilities,
   createHtmlInCanvasAdapter,
+  auditPreflightCapabilities,
 } from '../core/html-in-canvas-adapter';
 import {
   HtmlSurfaceTexturePipeline,
@@ -85,7 +86,12 @@ export type BicSceneRuntimeStatus =
       readonly message: string;
       readonly deviceRecoveryCount: number;
     }
-  | { readonly kind: 'failed'; readonly message: string };
+  | {
+      readonly kind: 'failed';
+      readonly message: string;
+      readonly missingCapabilities?: string[];
+      readonly auditedCapabilities?: Record<string, boolean>;
+    };
 
 export interface BicSurfaceRuntimeSnapshot {
   readonly id: string;
@@ -542,6 +548,24 @@ export class BicSceneRuntime {
   private async bootScene(): Promise<void> {
     if (!this.canvas || !this.surfaceCanvas) {
       throw new Error('BicSceneRuntime cannot boot without its scene canvases.');
+    }
+
+    const audit = auditPreflightCapabilities(this.surfaceCanvas);
+    if (!audit.supported) {
+      const missing: string[] = [];
+      if (!audit.details.webGpu) missing.push('webGpu');
+      if (!audit.details.layoutSubtree) missing.push('layoutSubtree');
+      if (!audit.details.paintEvent) missing.push('paintEvent');
+      if (!audit.details.copyPrimitive) missing.push('copyPrimitive');
+      if (!audit.details.getElementTransform) missing.push('getElementTransform');
+
+      this.status.set({
+        kind: 'failed',
+        message: 'Your environment does not support experimental HTML-in-Canvas or WebGPU capabilities.',
+        missingCapabilities: missing,
+        auditedCapabilities: audit.details,
+      });
+      return;
     }
 
     const engine = new BABYLON.WebGPUEngine(this.canvas, {
