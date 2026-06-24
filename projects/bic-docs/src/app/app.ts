@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, signal, computed } from '@angular/core';
 
-type Section = 'intro' | 'setup' | 'usage' | 'effects' | 'api';
+type Section = 'intro' | 'setup' | 'usage' | 'effects' | 'api' | 'runtime' | 'limitations';
 
 @Component({
   selector: 'app-root',
@@ -261,27 +261,39 @@ const focused = setSurfaceFocus(panel, true);</code></pre>
               <h2 class="section-title">API Reference</h2>
 
               <div class="content-card">
-                <h3>Components</h3>
+                <h3>BicSceneComponent inputs</h3>
                 <div class="api-table">
-                  <div class="api-row">
-                    <code>BicSceneComponent</code>
-                    <span>Root scene host. Creates WebGPU engine, camera, lights, and the HTML-in-Canvas surface canvas.</span>
-                  </div>
-                  <div class="api-row">
-                    <code>BicSurfaceComponent</code>
-                    <span>Projected surface. Wraps Angular content and projects it as a Babylon mesh with synchronized DOM transforms.</span>
-                  </div>
+                  <div class="api-row"><code>[engineOptions]</code><span>WebGPUEngineOptions — passed directly to the Babylon WebGPU engine constructor</span></div>
+                  <div class="api-row"><code>[diagnostics]</code><span>boolean (default false) — overlays a live JSON snapshot of runtime status and surface state</span></div>
                 </div>
+              </div>
+
+              <div class="content-card">
+                <h3>BicSceneComponent outputs</h3>
+                <div class="api-table">
+                  <div class="api-row"><code>(ready)</code><span>Emitted once when the WebGPU engine and scene have initialised successfully</span></div>
+                  <div class="api-row"><code>(runtimeError)</code><span>Emitted with an error message string when startup or recovery fails</span></div>
+                </div>
+              </div>
+
+              <div class="content-card">
+                <h3>BicSceneComponent sizing</h3>
+                <p><code>&lt;bic-scene&gt;</code> is <code>display: block; width: 100%; height: 100%</code>. Its parent <strong>must</strong> have an explicit height — <code>height: auto</code> will collapse the canvas to zero. A common pattern:</p>
+                <pre><code>// parent element
+.scene-container &#123;
+  width: 100%;
+  height: 100vh; // or any explicit size
+&#125;</code></pre>
               </div>
 
               <div class="content-card">
                 <h3>Surface inputs</h3>
                 <div class="api-table">
                   <div class="api-row"><code>[position]</code><span>Vec3 — world position &#123; x, y, z &#125;</span></div>
-                  <div class="api-row"><code>[rotation]</code><span>Vec3 — euler rotation &#123; x, y, z &#125;</span></div>
-                  <div class="api-row"><code>[size]</code><span>SurfaceSize — logical CSS &#123; width, height &#125;</span></div>
+                  <div class="api-row"><code>[rotation]</code><span>Vec3 — euler rotation in radians &#123; x, y, z &#125;</span></div>
+                  <div class="api-row"><code>[size]</code><span>SurfaceSize — logical CSS pixels &#123; width, height &#125; — not world units</span></div>
                   <div class="api-row"><code>[focused]</code><span>boolean — drives CSS class and effect intensity</span></div>
-                  <div class="api-row"><code>[primitive]</code><span>SurfacePrimitive — 'plane' (default) or &#123; kind: 'cylinder', arc, tessellation &#125;</span></div>
+                  <div class="api-row"><code>[primitive]</code><span>SurfacePrimitive — &#123; kind: 'plane' &#125; (default) or &#123; kind: 'cylinder', arc, tessellation &#125;</span></div>
                   <div class="api-row"><code>[interaction]</code><span>'auto' | 'none' — controls DOM pointer-events and inert state</span></div>
                   <div class="api-row"><code>[occlusion]</code><span>'auto' | 'none' — controls occlusion-based inert detection</span></div>
                 </div>
@@ -299,12 +311,129 @@ const focused = setSurfaceFocus(panel, true);</code></pre>
               </div>
 
               <div class="content-card">
-                <h3>Electron configuration exports</h3>
+                <h3>Runtime configuration exports</h3>
                 <div class="api-table">
-                  <div class="api-row"><code>BIC_CHROMIUM_FLAGS</code><span>Array of Chromium feature flag names.</span></div>
-                  <div class="api-row"><code>BIC_CHROMIUM_SWITCHES</code><span>Array of [switch, value?] tuples for app.commandLine.appendSwitch().</span></div>
-                  <div class="api-row"><code>auditPreflightCapabilities(canvas)</code><span>Returns &#123; supported, details &#125; describing runtime feature availability.</span></div>
+                  <div class="api-row"><code>BIC_CHROMIUM_FLAGS</code><span>Array of Chromium feature flag names required by the library.</span></div>
+                  <div class="api-row"><code>BIC_CHROMIUM_SWITCHES</code><span>Array of [switch, value?] tuples — pass each to app.commandLine.appendSwitch() in your Electron main process (or equivalent).</span></div>
+                  <div class="api-row"><code>auditPreflightCapabilities(canvas)</code><span>Returns &#123; supported, details &#125; describing runtime feature availability. See Runtime &amp; Recovery.</span></div>
                 </div>
+              </div>
+            </section>
+          }
+
+          @case ('runtime') {
+            <section class="docs-section">
+              <h2 class="section-title">Runtime &amp; Recovery</h2>
+
+              <div class="content-card">
+                <h3>Capability audit</h3>
+                <p>On startup, <code>&lt;bic-scene&gt;</code> runs a capability audit before initialising the WebGPU engine. If any required API is missing the scene <strong>does not crash</strong> — it transitions to a <code>failed</code> status and renders a capability card showing exactly what passed and what didn't.</p>
+                <p>There is no silent fallback to a DOM overlay or WebGL renderer. The audit result is intentional — it tells you what your runtime needs to enable.</p>
+                <pre><code>import &#123; auditPreflightCapabilities &#125; from '&#64;babylon-in-canvas/angular';
+
+const canvas = document.querySelector('canvas')!;
+const audit = auditPreflightCapabilities(canvas);
+
+console.log(audit.supported);
+// false if anything is missing
+
+console.log(audit.details);
+// &#123;
+//   webGpu: true,
+//   layoutSubtree: false,   // canvas needs layoutsubtree attribute
+//   paintEvent: false,      // requires experimental Chromium flag
+//   copyPrimitive: false,   // requires GPUQueue.copyElementImageToTexture
+//   getElementTransform: false
+// &#125;</code></pre>
+              </div>
+
+              <div class="content-card">
+                <h3>Required capabilities</h3>
+                <div class="api-table">
+                  <div class="api-row"><code>webGpu</code><span>navigator.gpu must be present — requires WebGPU support in the runtime</span></div>
+                  <div class="api-row"><code>layoutSubtree</code><span>canvas must have the layoutsubtree attribute — set automatically by BicSceneComponent</span></div>
+                  <div class="api-row"><code>paintEvent</code><span>canvas must fire paint events — requires CanvasDrawElement Chromium flag</span></div>
+                  <div class="api-row"><code>copyPrimitive</code><span>GPUQueue.copyElementImageToTexture (or equivalent) — requires WebGPUDeveloperFeatures flag</span></div>
+                  <div class="api-row"><code>getElementTransform</code><span>canvas.getElementTransform — required for DOM transform synchronisation</span></div>
+                </div>
+              </div>
+
+              <div class="content-card">
+                <h3>Runtime status</h3>
+                <p>The <code>BicSceneRuntime</code> service exposes a <code>status</code> signal you can consume directly:</p>
+                <pre><code>import &#123; BicSceneRuntime &#125; from '&#64;babylon-in-canvas/angular';
+
+// inject in a component that is a descendant of bic-scene
+readonly runtime = inject(BicSceneRuntime);
+
+// status() is one of:
+// &#123; kind: 'idle' &#125;
+// &#123; kind: 'booting' &#125;
+// &#123; kind: 'ready', capabilities, deviceRecoveryCount &#125;
+// &#123; kind: 'recovering', message, deviceRecoveryCount &#125;
+// &#123; kind: 'failed', message, missingCapabilities?, auditedCapabilities? &#125;</code></pre>
+              </div>
+
+              <div class="content-card">
+                <h3>WebGPU device loss recovery</h3>
+                <p>The runtime automatically recovers from WebGPU device loss without requiring any action from the consumer. The recovery sequence:</p>
+                <ol class="recovery-steps">
+                  <li>Status transitions to <code>recovering</code> — the scene stops rendering</li>
+                  <li>All surface Angular DOM hosts and their latest signal state are preserved</li>
+                  <li>GPU resources (pipelines, textures, materials, meshes, scene, engine) are fully disposed</li>
+                  <li>A fresh engine, device, scene, camera, and surface resources are created from scratch</li>
+                  <li>Surfaces re-register without moving or recreating Angular-owned DOM</li>
+                  <li>Status transitions back to <code>ready</code> with an incremented <code>deviceRecoveryCount</code></li>
+                </ol>
+                <p>No GPU resource is carried across device generations. The <code>(ready)</code> output does not re-emit on recovery — use <code>status()</code> directly if you need to react to recovery events.</p>
+              </div>
+
+              <div class="content-card">
+                <h3>Paint scheduling and coalescing</h3>
+                <p>Each surface pipeline manages its own async paint drain. Rapid DOM mutations are coalesced — only one paint/copy operation runs at a time per surface. Missed paint events are retried automatically up to twice before timing out.</p>
+                <p>Diagnostic counters (update count, resize count, retry count, in-flight state) are exposed as <code>data-bic-*</code> attributes on each surface host element, making them visible in DevTools without any extra instrumentation.</p>
+              </div>
+            </section>
+          }
+
+          @case ('limitations') {
+            <section class="docs-section">
+              <h2 class="section-title">Limitations &amp; Scope</h2>
+
+              <div class="content-card">
+                <h3>What this library is</h3>
+                <p>A bridge between Angular's DOM/CSS rendering and BabylonJS/WebGPU spatial presentation. The browser remains the layout engine. Angular components remain real Angular components. CSS remains real CSS. BabylonJS handles spatial composition, 3D presentation, depth, materials, and effects.</p>
+              </div>
+
+              <div class="content-card">
+                <h3>What this library is not</h3>
+                <ul class="limitation-list">
+                  <li>A compatibility library for standard browsers — it requires experimental Chromium APIs that are not yet in any stable browser release</li>
+                  <li>A host environment or product framework — it does not manage OS integration, window chrome, navigation, file access, or application packaging</li>
+                  <li>A WebGL or DOM-overlay renderer — if required APIs are missing, the library fails with a clear audit rather than silently degrading</li>
+                  <li>A reimplementation of CSS layout — it observes browser-computed layout, it does not replicate it</li>
+                </ul>
+              </div>
+
+              <div class="content-card">
+                <h3>Curved surfaces are visual-only</h3>
+                <p>Cylindrical <code>primitive</code> surfaces render the DOM texture across a curved mesh, but DOM hit testing, focus, and accessibility require a flat rectangular region. Curved surfaces are therefore always visual-only — pointer events and keyboard interaction are disabled regardless of the <code>[interaction]</code> input value.</p>
+                <p>Use flat <code>plane</code> surfaces for any surface that needs to be interactive.</p>
+              </div>
+
+              <div class="content-card">
+                <h3>Sizing constraints</h3>
+                <p><code>&lt;bic-scene&gt;</code> must have an explicit height from its parent — it will collapse to zero with <code>height: auto</code>. The <code>[size]</code> input on <code>&lt;bic-surface&gt;</code> is in logical CSS pixels, not Babylon world units. A surface declared as <code>&#123; width: 640, height: 480 &#125;</code> will render a 640×480 px DOM region regardless of where it sits in world space.</p>
+              </div>
+
+              <div class="content-card">
+                <h3>No scene-occlusion-aware DOM hit testing</h3>
+                <p>Surfaces are sorted by camera distance and occluded surfaces are made inert for pointer events. However, the occlusion model uses projected screen-space bounds — it is not depth-buffer accurate. Complex overlapping geometry may produce imperfect occlusion results. Use <code>[occlusion]="none"</code> to opt a surface out of automatic occlusion management.</p>
+              </div>
+
+              <div class="content-card">
+                <h3>Current scope boundary</h3>
+                <p>The library currently ships two spatial effects (<code>depth</code> and <code>glow</code>). The architecture supports additional effects via CSS custom properties — future candidates include bevel geometry, material presets (frosted glass, hologram), and border effects (pulse, electric). These are not yet implemented.</p>
               </div>
             </section>
           }
@@ -627,6 +756,35 @@ const focused = setSurfaceFocus(panel, true);</code></pre>
         &:hover { color: var(--color-teal); }
       }
     }
+
+    /* ── Runtime & Limitations ── */
+    .recovery-steps {
+      margin: 12px 0 8px 20px;
+      display: grid;
+      gap: 6px;
+
+      li {
+        font-size: 14px;
+        line-height: 1.5;
+        color: var(--text-secondary);
+
+        code {
+          color: var(--color-teal);
+        }
+      }
+    }
+
+    .limitation-list {
+      margin: 8px 0 0 20px;
+      display: grid;
+      gap: 8px;
+
+      li {
+        font-size: 14px;
+        line-height: 1.5;
+        color: var(--text-secondary);
+      }
+    }
   `,
 })
 export class App {
@@ -638,5 +796,7 @@ export class App {
     { id: 'usage' as Section, label: 'Usage' },
     { id: 'effects' as Section, label: 'Effects' },
     { id: 'api' as Section, label: 'API' },
+    { id: 'runtime' as Section, label: 'Runtime' },
+    { id: 'limitations' as Section, label: 'Limitations' },
   ]);
 }
